@@ -136,10 +136,12 @@ function mhfu_tick()
   -- gate C: combat-enable
   local cg = mhfu.read_u32(COMBAT_GATE_GLOBAL)
   if valid(cg + 0x5C) then mhfu.write_u8(cg + 0x5C, 1) end
-  -- gate D helper enable bit
+  -- gate D: helper 0x09A631A8 BAILS (returns 0, no target) when [player]+0x6AF14
+  -- bit0 is SET — it's a "no-target / safe-zone" flag (basecamp sets it; also
+  -- locks player control/camera). CLEAR it so the target resolver runs.
   if valid(pp + PL_TGT_ENABLE) then
     local te = mhfu.read_u32(pp + PL_TGT_ENABLE)
-    if (te & 1) == 0 then mhfu.write_u32(pp + PL_TGT_ENABLE, te | 1) end
+    if (te & 1) == 1 then mhfu.write_u32(pp + PL_TGT_ENABLE, te & 0xFFFFFFFE) end
   end
 
   -- heartbeat: did the engine ACQUIRE? + which gates currently hold
