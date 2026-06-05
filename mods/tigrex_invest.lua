@@ -16,7 +16,10 @@
 local TIGREX_SIZE  = 0.3
 local BASECAMP_AREA = 98
 local COLOC        = 6000.0
-local TP_OFFSET    = 700.0
+local TP_OFFSET    = 1000.0     -- relocate him this far from the player ONCE, then
+                                -- leave him FREE to do his fly-in + land + aggro
+                                -- entry (pinning him traps his pre-entry state and
+                                -- the engine resets him back -> never engages)
 local PLAYER_POS   = 0x09998D50
 local HP_CUR       = 0x090B3724      -- u16 current HP
 local HP_MAX       = 0x090B385E      -- u16 max HP
@@ -94,20 +97,24 @@ function mhfu_tick()
 
   local parea = mhfu.get_area_index()
   local scr   = mhfu.get_screen_state()
-
-  if scr ~= 17 or parea == BASECAMP_AREA then
-    last_tp_area = -1
-  elseif parea ~= last_tp_area then
-    local px, py, pz = read_f(PLAYER_POS), read_f(PLAYER_POS+4), read_f(PLAYER_POS+8)
-    write_f(ent + OFF_POS, px + TP_OFFSET); write_f(ent + OFF_POS + 4, py); write_f(ent + OFF_POS + 8, pz)
-    make_visible(ent, parea)
-    last_tp_area = parea
-    mhfu.log(string.format("[tiginvest] relocated Tigrex to section %d", parea))
-  end
-
-  local px, pz = read_f(PLAYER_POS), read_f(PLAYER_POS+8)
+  local px, py, pz = read_f(PLAYER_POS), read_f(PLAYER_POS+4), read_f(PLAYER_POS+8)
   local mx, mz = read_f(ent + OFF_POS), read_f(ent + OFF_POS+8)
-  if (px-mx)*(px-mx) + (pz-mz)*(pz-mz) < COLOC*COLOC then make_visible(ent, parea) end
+
+  -- Field section: relocate him next to the player ONCE on entry, then leave him
+  -- FREE so he flies in, lands, and aggros naturally (engage 0->1.0). Keep him
+  -- visible while co-located, but do NOT pin his position (pinning traps his
+  -- pre-entry state and the engine resets him -> no engage).
+  if scr == 17 and parea ~= BASECAMP_AREA then
+    if parea ~= last_tp_area then
+      write_f(ent + OFF_POS, px + TP_OFFSET); write_f(ent + OFF_POS + 4, py); write_f(ent + OFF_POS + 8, pz)
+      make_visible(ent, parea)
+      last_tp_area = parea
+      mhfu.log(string.format("[tiginvest] relocated Tigrex into section %d (free to enter)", parea))
+    end
+    if (px-mx)*(px-mx) + (pz-mz)*(pz-mz) < COLOC*COLOC then make_visible(ent, parea) end
+  else
+    last_tp_area = -1
+  end
 
   if tk % HEARTBEAT == 0 then
     mhfu.log(string.format("[tiginvest] hb area=%d engage=0x%08X ai=%d pos=(%.0f,%.0f)",
