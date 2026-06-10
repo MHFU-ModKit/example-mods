@@ -1,52 +1,76 @@
 -- megatigrex.lua — MEGA TIGREX SWARM
 --
--- On any quest that has EXACTLY ONE big-monster target, on the snowy mountains
--- map, spawn a swarm of 10 mini-Tigrex (random size 0.2..0.4) in section 1 and
--- paint them all on the minimap.
+-- On any quest that has EXACTLY ONE big-monster target, spawn a swarm of 10
+-- mini-Tigrex (random size 0.2..0.4) and paint them on the minimap.
 --
 -- HOW IT BUILDS ON WHAT WE LEARNED
 --   * One Tigrex must be RESIDENT to clone from. If the quest already has a
 --     Tigrex we use it; otherwise we ADD a Tigrex alongside the native monster
---     (mhfu.quest_add_monster — §48 group split + forge) so e.g. a Giadrome
---     quest becomes "1 Giadrome + 10 Tigrex". (If your build can't load a 2nd
---     DIFFERENT family yet, flip KEEP_NATIVE=false to REPLACE the native
---     monster with Tigrex instead — that always works.)
---   * The swarm itself is CHEAP: all 10 Tigrex share the one resident model /
---     overlay / species block — only the ~31 KB entity struct is duplicated.
---     mhfu.entity_clone() does the deep-copy + self-ptr rebase + splices the
---     copy into the engine update chain + registry (memory tigrex-clone-recipe).
---   * Forced into snow section 1 + made visible via the +0x29A section-tracker
---     fix (memory giadrome-tigrex-render-bug).
+--     (mhfu.quest_add_monster — §48), so e.g. a Giadrome quest becomes
+--     "1 Giadrome + 10 Tigrex". (Flip KEEP_NATIVE=false to REPLACE instead.)
+--   * The swarm is CHEAP: all 10 share the one resident model/overlay/species
+--     block — only the ~31 KB entity struct is duplicated. mhfu.entity_clone()
+--     deep-copies + rebases self-ptrs + splices into the engine update chain +
+--     registry (memory tigrex-clone-recipe). Clones live in the memory=64 extra
+--     RAM (0x0A800000+), so the tiny managed partition isn't starved.
+--   * A cloned big monster has NO engine manager driving it, and section
+--     transitions rebuild the update chain and ORPHAN the clones (they freeze).
+--     So we SHEPHERD them every tick: re-splice any orphan onto the live native
+--     Tigrex's +0x1C4 chain + sync its +0x29A section (visibility + ticking).
+--     Verified live: re-attaching an orphan flips it from frozen to ticking.
 --
--- DEPLOY: drop this file at
---   ms0:/PSP/PLUGINS/mhfu_framework/mods/megatigrex.lua
--- and cold-boot (the entity_clone C binding ships in the PRX). Hot-reload works
--- for tweaks once it's loaded. Only ONE mhfu_tick can be active — keep the
--- other tigrex_*.lua scripts out of the mods dir.
+-- DEPLOY: ms0:/PSP/PLUGINS/mhfu_framework/mods/megatigrex.lua  (+ cold boot once
+-- for the entity_clone C binding). Hot-reload works for tweaks after that.
 
 ------------------------------------------------------------------------ CONFIG
 local CFG = {
   COUNT       = 10,        -- total Tigrex in the swarm
   SIZE_MIN    = 0.2,
   SIZE_MAX    = 0.4,
-  SPREAD      = 1400.0,    -- world-unit radius of the ring we scatter them on
-  KEEP_NATIVE = true,      -- true  = ADD Tigrex, keep the quest's own monster
-                           -- false = REPLACE the native monster with Tigrex
-  AGGRO       = false,     -- true  = the whole swarm hunts you immediately
-                           --         (freeze HP at 0x090B3724 or you WILL die)
+  SPREAD      = 1400.0,    -- ring radius we home the swarm on (around the native)
+  COLOC       = 9000.0,    -- deploy once you're within this of the native Tigrex
+  KEEP_NATIVE = true,      -- true = ADD Tigrex (keep native); false = REPLACE
+  AGGRO       = false,     -- true = the swarm hunts you (HP freeze recommended)
+  FREEZE_HP   = true,      -- pin player HP to max each tick (one-shot insurance)
 }
 --------------------------------------------------------------------------------
 
-local TIGREX = mhfu.MON.TIGREX
-local SNOW_S1 = mhfu.AREA.SNOW_S1   -- 99
-local IN_AREA = 17                   -- screen_state when fully in a field section
+-- entity offsets
+local NEXTOBJ, PREVOBJ, SECTION, AISTATE = 0x1C4, 0x1C8, 0x29A, 0x334
+local HP_CUR, HP_MAX = 0x090B3724, 0x090B385E
+local LO_END  = 0x0A000000          -- native is below this; clones are above
+local RAM_END = 0x0C000000
+local TIGREX  = mhfu.MON.TIGREX
+local IN_AREA = 17
 
-local armed   = false   -- this quest qualified (single big monster, ensured Tigrex)
-local spawned = false   -- swarm already built this run
+-- State in a GLOBAL table so a hot-reload (re-execs this chunk) keeps the
+-- swarm we already built + the quest's `armed` decision. Backfill each field so
+-- a global persisted under an older schema can't leave a nil (nil-index crash).
+megatigrex_state = megatigrex_state or {}
+local S = megatigrex_state
+if S.armed    == nil then S.armed    = false end
+if S.deployed == nil then S.deployed = false end
+S.clones = S.clones or {}
+S.homed  = S.homed  or {}
+
+-- Hot-reload / savestate bootstrap: the quest event runs once at quest begin
+-- and won't re-fire, and a previous build may have cloned without recording the
+-- pointers. So whenever our clone list is empty but Tigrex already live up in
+-- extra RAM, recover them from the world (regardless of `armed`) so shepherd()
+-- can adopt the existing swarm after a hot-reload.
+if #S.clones == 0 then
+  for _, p in ipairs(mhfu.entities_of_type(TIGREX)) do
+    if p >= LO_END then S.clones[#S.clones + 1] = p end   -- clones = extra-RAM ones
+  end
+  if #S.clones > 0 then
+    S.armed, S.deployed, S.homed = true, true, {}
+    mhfu.log(string.format("[megatigrex] recovered %d existing clones from the world", #S.clones))
+  end
+end
 
 -------------------------------------------------------- gate + ensure resident
 mhfu.on_quest_targets_building(function(quest)
-  armed, spawned = false, false
+  S.armed, S.deployed, S.clones, S.homed = false, false, {}, {}
   if quest == 0 then return end
 
   local n = mhfu.quest_monster_count(quest)
@@ -56,20 +80,17 @@ mhfu.on_quest_targets_building(function(quest)
   end
 
   if mhfu.quest_has(quest, TIGREX) then
-    mhfu.log("[megatigrex] native Tigrex present — will clone it")
-    armed = true
+    mhfu.log("[megatigrex] native Tigrex present — will clone it"); S.armed = true
   elseif CFG.KEEP_NATIVE then
     if mhfu.quest_add_monster(quest, TIGREX, 0, 0) then
-      mhfu.log("[megatigrex] added a Tigrex alongside the native monster")
-      armed = true
+      mhfu.log("[megatigrex] added a Tigrex alongside the native monster"); S.armed = true
     else
-      mhfu.log("[megatigrex] quest_add_monster failed — flip KEEP_NATIVE=false to replace instead")
+      mhfu.log("[megatigrex] quest_add_monster failed — set KEEP_NATIVE=false to replace")
     end
   else
     local from = mhfu.quest_first_monster(quest)
     if from >= 0 and mhfu.quest_replace_monster(quest, from, TIGREX) then
-      mhfu.log(string.format("[megatigrex] replaced native 0x%02X with Tigrex", from))
-      armed = true
+      mhfu.log(string.format("[megatigrex] replaced native 0x%02X with Tigrex", from)); S.armed = true
     else
       mhfu.log("[megatigrex] could not retag the native monster")
     end
@@ -79,55 +100,100 @@ end)
 -- neutralise any stale action-force closure from a previous hot-reload
 mhfu.on_bigmonster_action(function(ctx) return ctx.action_id end, 100)
 
-------------------------------------------------------------------- swarm build
--- Scatter `ent` onto the ring at slot `i` of `total`, give it a random mini
--- size, drop it into section 1 and make it visible.
-local function place(ent, i, total, px, py, pz)
-  local a  = (i / total) * (2.0 * math.pi)
-  local x  = px + CFG.SPREAD * math.cos(a)
-  local z  = pz + CFG.SPREAD * math.sin(a)
-  local sz = CFG.SIZE_MIN + math.random() * (CFG.SIZE_MAX - CFG.SIZE_MIN)
-  ent:set_pos(x, py, z):set_size(sz):make_visible(SNOW_S1)
-  if CFG.AGGRO then ent:force_aggro(mhfu.world.player()) end
-  return sz
+------------------------------------------------------------- find the native
+-- The native Tigrex is the engine-driven one (lives in low RAM; clones are the
+-- ones we put up in extra RAM).
+local function native_tigrex()
+  for _, p in ipairs(mhfu.entities_of_type(TIGREX)) do
+    if p < LO_END then return p end
+  end
+  return nil
 end
 
-local function build_swarm()
-  local src = mhfu.world.first(TIGREX)
-  if not src then return false end           -- Tigrex not resident yet
-
-  local px, py, pz = mhfu.player_pos()
+------------------------------------------------------------------- swarm build
+local function build_swarm(src)
   math.randomseed((mhfu.get_quest_timer() or 0) + 1)
-
-  -- the resident Tigrex becomes swarm member #1
-  local sz1 = place(src, 0, CFG.COUNT, px, py, pz)
+  -- the native becomes member #1 (just mini-sized; the engine already drives it)
+  local sz1 = CFG.SIZE_MIN + math.random() * (CFG.SIZE_MAX - CFG.SIZE_MIN)
+  mhfu.entity_set_size(src, sz1)
   mhfu.log(string.format("[megatigrex] member 1/%d (native) size=%.2f", CFG.COUNT, sz1))
-
-  -- clone the rest, all sharing its model/overlay
+  -- clone the rest into extra RAM; shepherd() homes + wakes them
   for i = 1, CFG.COUNT - 1 do
-    local c = src:clone()
-    if not c then
-      mhfu.log(string.format("[megatigrex] clone %d failed (pool/registry full) — stopping", i + 1))
+    local c = mhfu.entity_clone(src)
+    if not c or c == 0 then
+      mhfu.log(string.format("[megatigrex] clone %d failed (RAM/registry full) — stopping", i + 1))
       break
     end
-    local sz = place(c, i, CFG.COUNT, px, py, pz)
-    mhfu.log(string.format("[megatigrex] member %d/%d clone=0x%08X size=%.2f",
-      i + 1, CFG.COUNT, c.ptr, sz))
+    mhfu.entity_set_size(c, CFG.SIZE_MIN + math.random() * (CFG.SIZE_MAX - CFG.SIZE_MIN))
+    S.clones[#S.clones + 1] = c
   end
-  return true
+  mhfu.log(string.format("[megatigrex] cloned %d (total %d Tigrex)", #S.clones, #S.clones + 1))
+end
+
+----------------------------------------------------- shepherd (keep them live)
+-- Walk the native's update chain; return a membership set + the tail.
+local function chain_set_tail(head)
+  local set, n = {}, head
+  for _ = 1, 80 do
+    set[n] = true
+    local nx = mhfu.read_u32(n + NEXTOBJ)
+    if nx == 0 or nx < 0x08000000 or nx >= RAM_END then return set, n end
+    n = nx
+  end
+  return set, n
+end
+
+local function shepherd(nat)
+  local natsec = mhfu.read_u16(nat + SECTION)
+  local natai  = mhfu.read_u8(nat + AISTATE)
+  local nx, ny, nz = mhfu.entity_pos(nat)
+  local members, tail = chain_set_tail(nat)
+  for i, cp in ipairs(S.clones) do
+    if cp and cp ~= 0 then
+      mhfu.write_u16(cp + SECTION, natsec)            -- keep in the native's section
+      if not members[cp] then                          -- orphaned -> re-attach + wake
+        mhfu.write_u32(cp + NEXTOBJ, 0)
+        mhfu.write_u32(cp + PREVOBJ, tail)
+        mhfu.write_u32(tail + NEXTOBJ, cp)
+        mhfu.write_u8(cp + AISTATE, natai)
+        tail = cp; members[cp] = true
+        if not S.homed[cp] then                        -- first attach: gather near native
+          local a = (i / CFG.COUNT) * (2.0 * math.pi)
+          mhfu.entity_set_pos(cp, nx + CFG.SPREAD * math.cos(a), ny, nz + CFG.SPREAD * math.sin(a))
+          mhfu.entity_make_visible(cp, natsec)
+          if CFG.AGGRO then mhfu.entity_force_aggro(cp, mhfu.player_pos()) end
+          S.homed[cp] = true
+        end
+      end
+    end
+  end
 end
 
 ----------------------------------------------------------------------- tick
 function mhfu_tick()
-  mhfu.paint_map()                              -- keep the swarm on the minimap
-  if not armed or spawned then return end
-  if mhfu.get_screen_state() ~= IN_AREA then return end
-  if mhfu.get_area_index() ~= SNOW_S1 then return end   -- snow section 1 only
-
-  if build_swarm() then
-    spawned = true
-    mhfu.log("[megatigrex] swarm deployed in snow section 1")
+  mhfu.paint_map()
+  if CFG.FREEZE_HP then
+    local mx = mhfu.read_u16(HP_MAX)
+    if mx > 0 and mx < 10000 then mhfu.write_u16(HP_CUR, mx) end
   end
+  if not S.armed then return end
+  if mhfu.get_screen_state() ~= IN_AREA then return end
+
+  local nat = native_tigrex()
+  if not nat then return end
+
+  if not S.deployed then
+    -- deploy once you've reached the native Tigrex's section (co-located)
+    local px, py, pz = mhfu.player_pos()
+    local mx, _, mz  = mhfu.entity_pos(nat)
+    local dx, dz = px - mx, pz - mz
+    if dx * dx + dz * dz > CFG.COLOC * CFG.COLOC then return end
+    build_swarm(nat)
+    S.deployed = true
+    mhfu.log("[megatigrex] swarm deployed")
+  end
+
+  shepherd(nat)   -- every tick: keep the clones attached + alive
 end
 
-mhfu.log("[megatigrex] registered — single-big-monster snow quests get 10 mini-Tigrex")
+mhfu.log("[megatigrex] registered — single-big-monster quests get 10 mini-Tigrex")
