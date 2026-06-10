@@ -30,7 +30,9 @@ local CFG = {
   SPREAD      = 1400.0,    -- ring radius we home the swarm on (around the native)
   COLOC       = 9000.0,    -- deploy once you're within this of the native Tigrex
   KEEP_NATIVE = true,      -- true = ADD Tigrex (keep native); false = REPLACE
-  AGGRO       = false,     -- true = the swarm hunts you (HP freeze recommended)
+  AGGRO       = true,      -- true = all 10 hunt + DAMAGE you while you share their
+                           -- section (HP freeze on). Clones default engage=0 (they
+                           -- roam/brawl + ignore you) — this is what makes them hit.
   FREEZE_HP   = true,      -- pin player HP to max each tick (one-shot insurance)
 }
 --------------------------------------------------------------------------------
@@ -157,6 +159,12 @@ local function shepherd(nat)
   local natsec = mhfu.read_u16(nat + SECTION)
   local natai  = mhfu.read_u8(nat + AISTATE)
   local nx, ny, nz = mhfu.entity_pos(nat)
+  -- clones default to engage=0 (they roam + brawl, ignoring you). When AGGRO and
+  -- you're in their section, re-point every clone at you each tick so all 10 hunt
+  -- + DAMAGE the player (and stop killing the native, since they target you).
+  local parea = mhfu.get_area_index()
+  local hunt  = CFG.AGGRO and (parea == natsec)
+  local px, py, pz = mhfu.player_pos()
   local members, tail = chain_set_tail(nat)
   for i, cp in ipairs(S.clones) do
     if cp and cp ~= 0 then
@@ -171,10 +179,10 @@ local function shepherd(nat)
           local a = (i / CFG.COUNT) * (2.0 * math.pi)
           mhfu.entity_set_pos(cp, nx + CFG.SPREAD * math.cos(a), ny, nz + CFG.SPREAD * math.sin(a))
           mhfu.entity_make_visible(cp, natsec)
-          if CFG.AGGRO then mhfu.entity_force_aggro(cp, mhfu.player_pos()) end
           S.homed[cp] = true
         end
       end
+      if hunt then mhfu.entity_force_aggro(cp, px, py, pz) end   -- all 10 hunt the player
     end
   end
 end
