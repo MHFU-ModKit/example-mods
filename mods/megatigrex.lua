@@ -53,6 +53,8 @@ if S.deployed == nil then S.deployed = false end
 S.clones = S.clones or {}
 S.homed  = S.homed  or {}
 
+local detach_all   -- forward decl (defined below; referenced by the death hook)
+
 -- Hot-reload / savestate bootstrap: the quest event runs once at quest begin
 -- and won't re-fire, and a previous build may have cloned without recording the
 -- pointers. So whenever our clone list is empty but Tigrex already live up in
@@ -99,6 +101,14 @@ end)
 
 -- neutralise any stale action-force closure from a previous hot-reload
 mhfu.on_bigmonster_action(function(ctx) return ctx.action_id end, 100)
+
+-- Detach the swarm the instant a big monster dies (fires on the poll thread,
+-- before the quest-end teardown walks the chain). Belt-and-suspenders with the
+-- area-exit guard in mhfu_tick — whichever sees it first unlinks the clones.
+mhfu.on_bigmonster_death(function(ent)
+  -- only the native (low RAM) dying ends the quest; clones are extra-RAM
+  if ent and ent < LO_END and S.deployed and detach_all then detach_all() end
+end)
 
 ------------------------------------------------------------- find the native
 -- The native Tigrex is the engine-driven one (lives in low RAM; clones are the
@@ -176,7 +186,7 @@ end
 -- and crashes (Read Word at garbage ptr in the manager-drive path). So detach
 -- them the moment we're leaving the field or the native is gone. The clone
 -- structs live in persistent extra RAM, so this just unlinks — no double-free.
-local function detach_all()
+detach_all = function()
   for _, cp in ipairs(S.clones) do
     if cp and cp ~= 0 then
       for s = 1, 20 do
