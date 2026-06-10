@@ -169,6 +169,30 @@ local function shepherd(nat)
   end
 end
 
+--------------------------------------------------------------- teardown safety
+-- Splice the clones OUT of the engine update chain + clear their registry slots.
+-- The clones are foreign objects we injected; if we leave them in when the quest
+-- tears down (native killed / area unload), the engine walks a now-dangling chain
+-- and crashes (Read Word at garbage ptr in the manager-drive path). So detach
+-- them the moment we're leaving the field or the native is gone. The clone
+-- structs live in persistent extra RAM, so this just unlinks — no double-free.
+local function detach_all()
+  for _, cp in ipairs(S.clones) do
+    if cp and cp ~= 0 then
+      for s = 1, 20 do
+        if mhfu.read_u32(0x09C1213C + s * 4) == cp then mhfu.write_u32(0x09C1213C + s * 4, 0) end
+      end
+      local prev = mhfu.read_u32(cp + PREVOBJ)
+      local nxt  = mhfu.read_u32(cp + NEXTOBJ)
+      if prev >= 0x08000000 and prev < RAM_END then mhfu.write_u32(prev + NEXTOBJ, nxt) end
+      if nxt  >= 0x08000000 and nxt  < RAM_END then mhfu.write_u32(nxt  + PREVOBJ, prev) end
+      mhfu.write_u32(cp + NEXTOBJ, 0)
+      mhfu.write_u32(cp + PREVOBJ, 0)
+    end
+  end
+  S.clones, S.homed, S.deployed = {}, {}, false
+end
+
 ----------------------------------------------------------------------- tick
 function mhfu_tick()
   mhfu.paint_map()
@@ -176,6 +200,17 @@ function mhfu_tick()
     local mx = mhfu.read_u16(HP_MAX)
     if mx > 0 and mx < 10000 then mhfu.write_u16(HP_CUR, mx) end
   end
+
+  -- teardown safety FIRST: if we've deployed but are leaving the field or the
+  -- native is gone, unlink the swarm before the engine tears the quest down.
+  if S.deployed and #S.clones > 0 then
+    if mhfu.get_screen_state() ~= IN_AREA or not native_tigrex() then
+      detach_all()
+      mhfu.log("[megatigrex] swarm detached (area exit / native gone) — teardown safe")
+      return
+    end
+  end
+
   if not S.armed then return end
   if mhfu.get_screen_state() ~= IN_AREA then return end
 
