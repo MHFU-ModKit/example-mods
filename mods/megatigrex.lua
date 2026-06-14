@@ -24,16 +24,26 @@
 
 ------------------------------------------------------------------------ CONFIG
 local CFG = {
-  COUNT       = 10,        -- total Tigrex in the swarm
+  COUNT       = 3,         -- total Tigrex in the swarm (native + 2 clones)
   SIZE_MIN    = 0.2,
   SIZE_MAX    = 0.4,
-  SPREAD      = 1400.0,    -- ring radius we home the swarm on (around the native)
+  SPREAD      = 1400.0,    -- ring radius we home the swarm on (around the PLAYER)
+  LEASH       = 5000.0,    -- SAFETY ONLY: rescue a clone that strayed way off / fell
+                           -- through the floor. Generous so it does NOT puppet — the
+                           -- clones run their own AI (aggro + attack) within this.
   COLOC       = 9000.0,    -- deploy once you're within this of the native Tigrex
   KEEP_NATIVE = true,      -- true = ADD Tigrex (keep native); false = REPLACE
-  AGGRO       = true,      -- true = all 10 hunt + DAMAGE you while you share their
-                           -- section (HP freeze on). Clones default engage=0 (they
-                           -- roam/brawl + ignore you) — this is what makes them hit.
-  FREEZE_HP   = true,      -- pin player HP to max each tick (one-shot insurance)
+  AGGRO       = true,      -- true = all hunt + DAMAGE you while you share their
+                           -- section. Clones default engage=0 (they roam/brawl +
+                           -- ignore you) — force_aggro + resolve_attack make them hit.
+  FREEZE_HP   = true,      -- floor player HP at HP_FLOOR each tick (survive but SEE
+                           -- the clones' damage land — not a pin-to-max that hides it)
+  HP_FLOOR    = 80,        -- keep-alive floor while testing clone damage
+  RESOLVE     = false,     -- EXPERIMENTAL clone damage driver. OFF by default: it
+                           -- re-enters z_un_08865648 from the ai_step prefix and can
+                           -- misalign the stack for the engine's VFPU-quad transform
+                           -- code -> alignment crash on quest entry. Flip to true only
+                           -- to resume the damage experiment. Off = stable visual swarm.
 }
 --------------------------------------------------------------------------------
 
@@ -54,6 +64,7 @@ if S.armed    == nil then S.armed    = false end
 if S.deployed == nil then S.deployed = false end
 S.clones = S.clones or {}
 S.homed  = S.homed  or {}
+S.strikes = S.strikes or 0
 
 local detach_all   -- forward decl (defined below; referenced by the death hook)
 
@@ -103,6 +114,17 @@ end)
 
 -- neutralise any stale action-force closure from a previous hot-reload
 mhfu.on_bigmonster_action(function(ctx) return ctx.action_id end, 100)
+
+-- CLONE DAMAGE: driven per-frame on the GAME THREAD by a C ai_step handler
+-- (mhfu.clone_combat). The engine's combat enumeration only resolves the ~2
+-- manager-registered combatants, so clones get AI/movement ticks but never an
+-- attack-resolve tick -> they roam but deal 0 damage. mhfu.clone_combat(true)
+-- runs the engine attack resolver z_un_08865934(clone) every frame for each
+-- extra-RAM clone (same cadence the native gets) -> real engine-computed damage
+-- (hitbox/per-part/formula), no per-clone manager. (A 2 Hz worker call here, or
+-- the sparse per-action callback, was too infrequent + off-thread — proven not
+-- to land hits.)
+mhfu.clone_combat(CFG.RESOLVE)
 
 -- Detach the swarm the instant a big monster dies (fires on the poll thread,
 -- before the quest-end teardown walks the chain). Belt-and-suspenders with the
@@ -156,35 +178,47 @@ local function chain_set_tail(head)
 end
 
 local function shepherd(nat)
-  local natsec = mhfu.read_u16(nat + SECTION)
   local natai  = mhfu.read_u8(nat + AISTATE)
-  local nx, ny, nz = mhfu.entity_pos(nat)
-  -- clones default to engage=0 (they roam + brawl, ignoring you). When AGGRO and
-  -- you're in their section, re-point every clone at you each tick so all 10 hunt
-  -- + DAMAGE the player (and stop killing the native, since they target you).
+  -- Clones are now PUPPETED to the PLAYER, not the (engine-driven, roaming) native.
+  -- The native wanders sections on its own AI; if we pinned clones to the native's
+  -- section they'd vanish with it. Instead keep every clone in the PLAYER's section,
+  -- ringed + leashed around the player, and forced to spin-attack (C driver). So they
+  -- stay in your face and deal AoE damage regardless of where the native roams off to.
   local parea = mhfu.get_area_index()
-  local hunt  = CFG.AGGRO and (parea == natsec)
   local px, py, pz = mhfu.player_pos()
   local members, tail = chain_set_tail(nat)
   for i, cp in ipairs(S.clones) do
     if cp and cp ~= 0 then
-      mhfu.write_u16(cp + SECTION, natsec)            -- keep in the native's section
-      if not members[cp] then                          -- orphaned -> re-attach + wake
+      mhfu.write_u16(cp + SECTION, parea)              -- render in the PLAYER's section
+      if not members[cp] then                          -- orphaned -> re-attach (chain = ticking)
         mhfu.write_u32(cp + NEXTOBJ, 0)
         mhfu.write_u32(cp + PREVOBJ, tail)
         mhfu.write_u32(tail + NEXTOBJ, cp)
         mhfu.write_u8(cp + AISTATE, natai)
         tail = cp; members[cp] = true
-        if not S.homed[cp] then                        -- first attach: gather near native
+        if not S.homed[cp] then                        -- first attach: gather near the PLAYER
           local a = (i / CFG.COUNT) * (2.0 * math.pi)
-          mhfu.entity_set_pos(cp, nx + CFG.SPREAD * math.cos(a), ny, nz + CFG.SPREAD * math.sin(a))
-          mhfu.entity_make_visible(cp, natsec)
+          mhfu.entity_set_pos(cp, px + CFG.SPREAD * math.cos(a), py, pz + CFG.SPREAD * math.sin(a))
+          mhfu.entity_make_visible(cp, parea)
           S.homed[cp] = true
         end
       end
-      if hunt then mhfu.entity_force_aggro(cp, px, py, pz) end   -- all 10 hunt the player
+      mhfu.entity_force_aggro(cp, px, py, pz)           -- always face/target the player
+      -- LEASH to the PLAYER every tick (puppet): a bare clone has no ground collision,
+      -- so snap any that drift past LEASH or fall below the player's Y back to a tight
+      -- ring around you so the forced spin-attack actually reaches you.
+      local cx, cy, cz = mhfu.entity_pos(cp)
+      local dx2, dz2 = px - cx, pz - cz
+      if dx2*dx2 + dz2*dz2 > CFG.LEASH*CFG.LEASH or cy < py - 1500.0 then
+        local a = (i / CFG.COUNT) * (2.0 * math.pi)
+        mhfu.entity_set_pos(cp, px + CFG.SPREAD * math.cos(a), py, pz + CFG.SPREAD * math.sin(a))
+      end
     end
   end
+  -- hand the live clone list to the C per-frame driver (it ticks each clone's AI
+  -- + attack resolver on the game thread so they actually attack + DAMAGE you;
+  -- the engine's registry-driven AI never reaches these off-registry clones).
+  mhfu.clones_set(S.clones)
 end
 
 --------------------------------------------------------------- teardown safety
@@ -209,23 +243,46 @@ detach_all = function()
     end
   end
   S.clones, S.homed, S.deployed = {}, {}, false
+  mhfu.clones_set({})           -- stop the C driver ticking now-detached clones
 end
 
 ----------------------------------------------------------------------- tick
 function mhfu_tick()
-  mhfu.paint_map()
-  if CFG.FREEZE_HP then
-    local mx = mhfu.read_u16(HP_MAX)
-    if mx > 0 and mx < 10000 then mhfu.write_u16(HP_CUR, mx) end
+  mhfu.paint_map()                       -- big monsters (incl. clones) on the minimap
+
+  -- Village elder: unlock ALL quest ranks (set the highest rank flag -> every row
+  -- ungreys). save_obj = [0x089CC438]; flag 0x2BC1 = save_obj+0x445C bit4. Runs
+  -- everywhere (incl. village/menu) so you never have to ask for the unlock again.
+  do
+    local so = mhfu.read_u32(0x089CC438)
+    if so >= 0x08000000 and so < 0x0C000000 then
+      local b = mhfu.read_u8(so + 0x445C)
+      if (b & 0x10) == 0 then mhfu.write_u8(so + 0x445C, b | 0x10) end
+    end
+  end
+
+  if CFG.FREEZE_HP then                   -- floor (not pin) so clone damage is visible
+    local mx  = mhfu.read_u16(HP_MAX)
+    local cur = mhfu.read_u16(HP_CUR)
+    if mx > 0 and mx < 10000 and cur < CFG.HP_FLOOR then mhfu.write_u16(HP_CUR, CFG.HP_FLOOR) end
   end
 
   -- teardown safety FIRST: if we've deployed but are leaving the field or the
   -- native is gone, unlink the swarm before the engine tears the quest down.
   if S.deployed and #S.clones > 0 then
+    -- DEBOUNCE: a transient screen_state blip (pause/menu overlay/section seam)
+    -- must NOT tear down + rebuild the swarm every tick (that thrash spawned 12
+    -- stale clones and kept the clones from ever settling/attacking). Require the
+    -- teardown condition to hold for several consecutive ticks before unlinking.
     if mhfu.get_screen_state() ~= IN_AREA or not native_tigrex() then
-      detach_all()
-      mhfu.log("[megatigrex] swarm detached (area exit / native gone) — teardown safe")
-      return
+      S.strikes = (S.strikes or 0) + 1
+      if S.strikes >= 4 then
+        detach_all()
+        mhfu.log("[megatigrex] swarm detached (area exit / native gone) — teardown safe")
+        return
+      end
+    else
+      S.strikes = 0
     end
   end
 
