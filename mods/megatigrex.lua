@@ -39,11 +39,35 @@ local CFG = {
   FREEZE_HP   = true,      -- floor player HP at HP_FLOOR each tick (survive but SEE
                            -- the clones' damage land — not a pin-to-max that hides it)
   HP_FLOOR    = 80,        -- keep-alive floor while testing clone damage
-  RESOLVE     = false,     -- EXPERIMENTAL clone damage driver. OFF by default: it
-                           -- re-enters z_un_08865648 from the ai_step prefix and can
-                           -- misalign the stack for the engine's VFPU-quad transform
-                           -- code -> alignment crash on quest entry. Flip to true only
-                           -- to resume the damage experiment. Off = stable visual swarm.
+  RESOLVE     = false,     -- EXPERIMENTAL (old) clone damage driver. OFF: it re-enters
+                           -- z_un_08865648 from the ai_step prefix and can misalign the
+                           -- stack for the engine's VFPU-quad transform -> alignment crash.
+                           -- Superseded by NODE (Route A) below.
+  COMBAT_NODE = false,     -- PATH 1b clone damage: native node builder 0x09B661E8(g, clone,
+                           -- idx) driven from the stable action seam. (Fixed: entry is
+                           -- 0x09B661E8 not ..EC -> skipped prologue corrupted the stack ->
+                           -- NULL node -> Write@0x10; and a0 = g=[0x09C18FD0], not manager.) For
+                           -- clone, call the engine's own per-frame node builder
+                           -- 0x09B661EC(mgr, clone, idx) on the game thread -> the engine
+                           -- allocates a real per-frame collision node + splices it ->
+                           -- the clone becomes a genuine combatant -> native damage. Clones
+                           -- pass the section gate (shepherd keeps +0x29a == cur section).
+                           -- OFF by default (calls an engine fn per clone per frame -> may
+                           -- need frame-ordering tuning; cold-boot test).
+  NODE        = false,     -- ROUTE A clone damage (collision-node clone). DISABLED: a
+                           -- hand-copied node in extra RAM gets actively re-managed by the
+                           -- engine (it rebinds entity<->node + walks the node through
+                           -- multiple intrusive lists incl. one at container+0x20, accessed
+                           -- at negative offsets). Foreign copies violate those invariants
+                           -- -> list-op corrupts a link -> crash. A real node must come from
+                           -- the engine's own pool allocator (Path B's spawn-constructor),
+                           -- not a copy. Left wired (below) for when we have that allocator.
+                           -- copy the NATIVE Tigrex's collision node, rebind it to the
+                           -- clone, and splice it into the engine hit-test list
+                           -- ([0x09C18FD0]+0x502c, link node+0x04). Then the engine
+                           -- collision-resolves the clone NATIVELY (real hitbox/per-part
+                           -- damage) — pure data writes, no engine call, no crash. Needs
+                           -- the native to be ENGAGED first (so it has a node to clone).
 }
 --------------------------------------------------------------------------------
 
@@ -64,6 +88,8 @@ if S.armed    == nil then S.armed    = false end
 if S.deployed == nil then S.deployed = false end
 S.clones = S.clones or {}
 S.homed  = S.homed  or {}
+S.nodes  = S.nodes  or {}     -- clone_ptr -> its collision node (Route A)
+S.next_uid = S.next_uid or 0x100  -- unique combatant id per clone node
 S.strikes = S.strikes or 0
 
 local detach_all   -- forward decl (defined below; referenced by the death hook)
@@ -112,7 +138,10 @@ mhfu.on_quest_targets_building(function(quest)
   end
 end)
 
--- neutralise any stale action-force closure from a previous hot-reload
+-- Action seam: the PROVEN-stable game-thread, engine-quiescent override (executor
+-- detour 0x09AC5228). We DON'T force an action (return ctx.action_id unchanged) but
+-- piggyback on it to register clone combat nodes each time the native acts — the
+-- ai_step detour crashes big-mon quest entry, this seam doesn't. Path 1b damage.
 mhfu.on_bigmonster_action(function(ctx) return ctx.action_id end, 100)
 
 -- CLONE DAMAGE: driven per-frame on the GAME THREAD by a C ai_step handler
@@ -125,6 +154,11 @@ mhfu.on_bigmonster_action(function(ctx) return ctx.action_id end, 100)
 -- the sparse per-action callback, was too infrequent + off-thread — proven not
 -- to land hits.)
 mhfu.clone_combat(CFG.RESOLVE)
+
+-- PATH 1b: native combat-node registration (real clone damage). When enabled, a
+-- game-thread per-frame driver calls the engine's own node builder for each clone
+-- (uses the live clone list pushed by shepherd via mhfu.clones_set).
+mhfu.combat_nodes(CFG.COMBAT_NODE)
 
 -- Detach the swarm the instant a big monster dies (fires on the poll thread,
 -- before the quest-end teardown walks the chain). Belt-and-suspenders with the
@@ -215,9 +249,35 @@ local function shepherd(nat)
       end
     end
   end
-  -- hand the live clone list to the C per-frame driver (it ticks each clone's AI
-  -- + attack resolver on the game thread so they actually attack + DAMAGE you;
-  -- the engine's registry-driven AI never reaches these off-registry clones).
+  -- ROUTE A: give each clone a real collision NODE so the engine's hit-test
+  -- resolves its attacks against the player natively (real damage). Clone the
+  -- NATIVE Tigrex's node (it has one once engaged); then per-frame keep the
+  -- node's position synced to the clone + re-linked into the list (section
+  -- transitions rebuild the list and drop foreign nodes).
+  if CFG.NODE then
+    local tmpl = mhfu.node_of(nat)            -- native's node (0 until it engages)
+    for _, cp in ipairs(S.clones) do
+      if cp and cp ~= 0 then
+        local nd = S.nodes[cp]
+        if not nd and tmpl ~= 0 then           -- first time: clone the node
+          -- uid=0 => keep the native's (small, in-range) id; do NOT invent a
+          -- large id (the engine indexes by it -> OOB -> bad-jalr crash, seen
+          -- live) and do NOT grow the player combatant array.
+          nd = mhfu.node_clone(tmpl, cp, 0)
+          if nd ~= 0 then
+            S.nodes[cp] = nd
+            mhfu.log(string.format("[megatigrex] clone %08X got combat node %08X", cp, nd))
+          end
+        elseif nd then                          -- maintain it
+          mhfu.node_sync(nd, cp)
+          mhfu.node_relink(nd)
+        end
+      end
+    end
+  end
+
+  -- hand the live clone list to the C per-frame driver (only the old RESOLVE
+  -- path uses this; Route A does not need it).
   mhfu.clones_set(S.clones)
 end
 
@@ -231,6 +291,11 @@ end
 detach_all = function()
   for _, cp in ipairs(S.clones) do
     if cp and cp ~= 0 then
+      -- Route A: unlink the clone's collision node FIRST (a dangling node left
+      -- in the hit-test list = the engine walks garbage = crash).
+      local nd = S.nodes[cp]
+      if nd and nd ~= 0 then mhfu.node_detach(nd) end
+      if mhfu.read_u32(cp + 0x2EC) == (nd or 0) then mhfu.write_u32(cp + 0x2EC, 0) end
       for s = 1, 20 do
         if mhfu.read_u32(0x09C1213C + s * 4) == cp then mhfu.write_u32(0x09C1213C + s * 4, 0) end
       end
@@ -242,13 +307,14 @@ detach_all = function()
       mhfu.write_u32(cp + PREVOBJ, 0)
     end
   end
-  S.clones, S.homed, S.deployed = {}, {}, false
+  S.clones, S.homed, S.nodes, S.deployed = {}, {}, {}, false
   mhfu.clones_set({})           -- stop the C driver ticking now-detached clones
 end
 
 ----------------------------------------------------------------------- tick
 function mhfu_tick()
   mhfu.paint_map()                       -- big monsters (incl. clones) on the minimap
+  if CFG.COMBAT_NODE then mhfu.combat_swap() end   -- (re)install the JIT-immune field swap
 
   -- Village elder: unlock ALL quest ranks (set the highest rank flag -> every row
   -- ungreys). save_obj = [0x089CC438]; flag 0x2BC1 = save_obj+0x445C bit4. Runs
