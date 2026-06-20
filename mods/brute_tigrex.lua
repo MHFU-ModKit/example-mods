@@ -81,7 +81,7 @@ local SWAP_GIADROME = true   -- Brute test (swap Giadrome->Tigrex host)
 local BRUTE_SIZE = 1.05
 
 -- Aggro range: keep the engine permanently aggroed once engaged.
-local FORCE_AGGRO = false  -- off: engaging a dormant swap-spawn just un-culls a collapsed model -> GE freeze
+local FORCE_AGGRO = false  -- v26 rest-pose visual test needs only the bind pose drawn
 
 -- Action cycle period (driven by mhfu_tick at 2 Hz).
 -- CYCLE_TICKS=4 -> ~2 s per action (slow enough to clearly see each clip).
@@ -104,7 +104,15 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 -- skeleton bind pose → Brute renders static, no Tigrex motion). Same 1216512 B as
 -- native file_06185 so the same-size in-place inject path is unchanged. This is
 -- the first milestone of the recursive in-game anim encoder (anim_ingame.py).
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v25_streamids.bin"
+-- v26 = v25's load-proven skel/model/textures (stream-id partition fix) but with
+-- the converted real-motion anim REPLACED by an identity-rotation REST-POSE anim
+-- (anim_ingame.swap_anim_to_bindpose, split [31,9,5], streams main/sub1/sub3 ==
+-- native layout).  ISOLATION TEST: offline our importer assembles the Brute mesh
+-- fine in bind pose (skinning works); in-engine v25 (real motion) COLLAPSES it.
+-- If v26 (rest pose, no foreign rotations) renders the splayed-but-present Brute
+-- in-engine, skinning+load+stream-binding are proven and ONLY the cross-game
+-- motion retarget remains.  If v26 ALSO collapses -> the bug is skinning/engine.
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v29_vgidx14.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
@@ -224,7 +232,10 @@ local function log2(fmt, ...) if LOG_LEVEL >= 2 then mhfu.log(fmt:format(...)) e
 -- HOME area (not every section) so he does NOT get dragged section-to-section as
 -- the player moves (the earlier "follow" bug).  HOME_AREA is latched the first
 -- time the player is co-located with his world position (or set explicitly).
-local HOME_AREA = 0xFFFF   -- DISABLED: never un-cull (collapsed mesh draw hangs GE)
+local HOME_AREA = 100   -- v26 rest-pose: un-cull in snow section 6.  Rest pose = BIND pose
+                        -- = coherent geometry (offline render_check bbox 2243, no degenerate
+                        -- tris) -> draws safely, NO GE hang (unlike v25's scrambled motion).
+                        -- Expect a stiff/splayed-but-present Brute = skinning proven in-engine.
 
 local function apply_render_fix(ent)
     local area = mhfu.get_area_index()
