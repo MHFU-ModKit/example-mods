@@ -74,14 +74,14 @@
 -- the FRAME-FREE inline joint-fix that's gone. The swap reliably loads the Brute
 -- (image 15: overwrite + spawn hp 2400); the native quest crashed before the
 -- model even loaded. Use the swap to get the Brute in.
-local SWAP_GIADROME = true
+local SWAP_GIADROME = true   -- Brute test (swap Giadrome->Tigrex host)
 
 -- Monster size scalar for the Brute Tigrex appearance (>1 = larger).
 -- Brute Tigrex is slightly bigger than regular Tigrex.
 local BRUTE_SIZE = 1.05
 
 -- Aggro range: keep the engine permanently aggroed once engaged.
-local FORCE_AGGRO = true
+local FORCE_AGGRO = false  -- off: engaging a dormant swap-spawn just un-culls a collapsed model -> GE freeze
 
 -- Action cycle period (driven by mhfu_tick at 2 Hz).
 -- CYCLE_TICKS=4 -> ~2 s per action (slow enough to clearly see each clip).
@@ -89,7 +89,7 @@ local CYCLE_TICKS = 4
 
 -- Log verbosity: 0 = silent, 1 = spawn/inject/death, 2 = every action pick.
 -- Keep at 2 for this HITL session so we can correlate a1 -> screen clip.
-local LOG_LEVEL = 2
+local LOG_LEVEL = 1   -- 1 = spawn/inject/render/death only (CYCLE spam off)
 
 -- Inject paths on the memstick.
 local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
@@ -98,7 +98,13 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 -- proven same-size IN-PLACE overwrite (inject_register) instead of relocate. The
 -- engine's restructure/staging then lands the skeleton sub where native's would
 -- (v6's compacted layout put skel at base+0x29744 = inside anim -> bad joint ptr).
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v12.bin"
+-- v13 = Brute skel/model/textures + a real MHFU in-game (recursive 3-stream)
+-- BIND-POSE anim built by tools/mhfu_model/anim_ingame.make_static_pose (single
+-- main stream, 42 empty bone sections → every animated bone falls back to the
+-- skeleton bind pose → Brute renders static, no Tigrex motion). Same 1216512 B as
+-- native file_06185 so the same-size in-place inject path is unchanged. This is
+-- the first milestone of the recursive in-game anim encoder (anim_ingame.py).
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v25_streamids.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
@@ -173,12 +179,21 @@ local MOVESET_LEN = PROBE_COUNT
 -- thread (racefree). The .orig sibling (<path>.orig = native file_06185) is the
 -- species match key + diff-fingerprint gate. inject_now primes the edit + .orig
 -- into xram immediately (don't wait on the worker's first tick).
-local inject_ok = mhfu.inject_register(TIGREX_FID, BRUTE_PAC)
-if inject_ok then
-    mhfu.inject_now(TIGREX_FID)   -- prime e->buf / e->obuf / diff fingerprint now
-    mhfu.log("[brute_tigrex] inject_register OK fid=%d '%s' (primed)", TIGREX_FID, BRUTE_PAC)
+-- CAPTURE_NATIVE: skip the inject so a NATIVE Tigrex loads (for RE'ing the working
+-- anim path as ground truth). The swap still puts a Tigrex in the Giadrome quest,
+-- but with no inject it's the pristine native Tigrex (real skel/model/anim).
+local CAPTURE_NATIVE = false  -- inject ON (Brute v25)
+local inject_ok = false
+if not CAPTURE_NATIVE then
+    inject_ok = mhfu.inject_register(TIGREX_FID, BRUTE_PAC)
+    if inject_ok then
+        mhfu.inject_now(TIGREX_FID)   -- prime e->buf / e->obuf / diff fingerprint now
+        mhfu.log("[brute_tigrex] inject_register OK fid=%d '%s' (primed)", TIGREX_FID, BRUTE_PAC)
+    else
+        mhfu.log("[brute_tigrex] inject_register FAILED — check paths + cold boot")
+    end
 else
-    mhfu.log("[brute_tigrex] inject_register FAILED — check paths + cold boot")
+    mhfu.log("[brute_tigrex] CAPTURE_NATIVE: inject SKIPPED — native Tigrex will load")
 end
 
 ------------------------------------------------------------------------ STATE
@@ -188,26 +203,44 @@ local g_armed     = false -- action-force is active
 local g_move_idx  = 1     -- current index into PROBE_IDS
 local g_tick_ctr  = 0     -- ticks since last state advance
 local g_render_ok = false -- render fix applied
+local g_dbg_fkA   = -1     -- last-seen FK bind ptr A (for change-logging)
+local g_dbg_fkB   = -1     -- last-seen FK bind ptr B
 
 ------------------------------------------------------------------------ HELPERS
 
 local function log1(fmt, ...) if LOG_LEVEL >= 1 then mhfu.log(fmt:format(...)) end end
 local function log2(fmt, ...) if LOG_LEVEL >= 2 then mhfu.log(fmt:format(...)) end end
 
--- Apply the section-tracker render fix: entity+0x29A = player area,
--- entity+0x638 bit 0x8000 = set.  Required for swap-spawned monsters that
--- the engine culls until the first natural roam sets the tracker.
--- Returns true once the section matches so the caller can stop calling.
+-- HOME-section render fix (2026-06-20, re-corrected with the user's key info:
+-- the Brute is anchored in ONE section the whole quest — the minimap shows him in
+-- snow section 6 (area_index 100) throughout, while his +0x29A tracker holds an
+-- UNINITIALISED value (92..109, never == the player area).  So +0x29A is NOT his
+-- real section; the swap-spawn never initialised it (the giadrome render bug).
+-- The engine's per-frame draw gate (0x09AC4960) culls him UNLESS +0x29A == player
+-- area_index AND +0x638 & 0x8000.  Since +0x29A is garbage, he is always culled.
+--
+-- Fix: when the player is in his HOME section, FORCE +0x29A = player area and set
+-- the +0x638 gate; the engine's gate then clears skip-draw itself.  We gate on the
+-- HOME area (not every section) so he does NOT get dragged section-to-section as
+-- the player moves (the earlier "follow" bug).  HOME_AREA is latched the first
+-- time the player is co-located with his world position (or set explicitly).
+local HOME_AREA = 0xFFFF   -- DISABLED: never un-cull (collapsed mesh draw hangs GE)
+
 local function apply_render_fix(ent)
     local area = mhfu.get_area_index()
-    local sec  = mhfu.read_u16(ent + OFF_SECTION)
-    if sec ~= area then
+    if area ~= HOME_AREA then
+        return false                      -- player not in his section: leave culled
+    end
+    -- Player IS in his home section: force his tracker to match + open the gate so
+    -- the engine un-culls him.  (He's physically here per the minimap; forcing
+    -- +0x29A here does not teleport him — it just initialises the tracker the
+    -- swap-spawn never set.)
+    if mhfu.read_u16(ent + OFF_SECTION) ~= area then
         mhfu.write_u16(ent + OFF_SECTION, area)
-        local f = mhfu.read_u32(ent + OFF_FLAGS638)
-        if (f & 0x8000) == 0 then
-            mhfu.write_u32(ent + OFF_FLAGS638, f | 0x8000)
-        end
-        return false  -- not yet stable
+    end
+    local f = mhfu.read_u32(ent + OFF_FLAGS638)
+    if (f & 0x8000) == 0 then
+        mhfu.write_u32(ent + OFF_FLAGS638, f | 0x8000)
     end
     return true
 end
@@ -248,19 +281,23 @@ end
 
 -- 2. Spawn: record entity, apply initial setup.
 mhfu.on_bigmonster_spawn(function(ent, mtype, slot, hp)
-    -- ISOLATION: log the RAW ent only (no deref, no g_ent/g_armed set) so
-    -- mhfu_tick stays a no-op (g_armed=false). Tests whether the lua_host-worker
-    -- crash was our tick reading a corrupted entity ptr, and shows the ent value.
     log1("[brute_tigrex] spawn ent=0x%08X mtype=%d hp=%d", ent, mtype, hp)
-    -- Construction-state dump: the FK crash (0x08863198 -> write 0d8c59b0) is a
-    -- bone_count overflow. entity+0x124 = bone_count (should be 46 if the skel was
-    -- fixed; ~655360 if the engine read a bad restructured skel). Also pmo/anim
-    -- ptrs (+0x50/+0x1ac) and the skel-region the FK walks.
-    if ent ~= 0 then
-        log1("[brute_tigrex] CON bc124=%d m122=0x%04X pmo=0x%08X anim=0x%08X s50=0x%08X",
-             mhfu.read_u32(ent + 0x124), mhfu.read_u16(ent + 0x122),
-             mhfu.read_u32(ent + 0x50), mhfu.read_u32(ent + 0x1ac),
-             mhfu.read_u32(ent + 0x4C8))
+    if ent == 0 then return end
+    log1("[brute_tigrex] CON bc124=%d m122=0x%04X pmo=0x%08X anim=0x%08X s50=0x%08X",
+         mhfu.read_u32(ent + 0x124), mhfu.read_u16(ent + 0x122),
+         mhfu.read_u32(ent + 0x50), mhfu.read_u32(ent + 0x1ac),
+         mhfu.read_u32(ent + 0x4C8))
+    -- v14 (in-game bind-pose anim) loads stably, so it's safe to ARM the per-tick
+    -- maintenance. We DON'T enable the AI action override (we want a static Brute),
+    -- but the tick must run the SECTION-TRACKER RENDER FIX: a swap-spawned monster
+    -- is culled (skip-draw bit at +0x004) until its first natural roam sets the
+    -- section tracker +0x29A. The Brute never roams, so the tick forces +0x29A =
+    -- player area + |0x8000 on +0x638 (memory `giadrome-tigrex-render-bug`).
+    if mtype == MON_TIGREX then
+        g_ent       = ent
+        g_armed     = true
+        g_render_ok = false
+        log1("[brute_tigrex] armed tick (render fix + freeze net) on ent=0x%08X", ent)
     end
 end)
 
@@ -303,6 +340,20 @@ end, 10)
 function mhfu_tick()
     mhfu.write_u8(ADDR_PAINTBALL, 0xFF)   -- keep the boss visible on the map
 
+    -- Self-acquire: if we don't have the entity yet (e.g. the spawn event already
+    -- fired before a hot-reload), scan the registry for the Tigrex-host Brute so the
+    -- render fix can run WITHOUT a cold boot.
+    if g_ent == 0 then
+        for s = 0, 31 do
+            local e = mhfu.entity_at(s)
+            if e ~= 0 and mhfu.entity_type(e) == MON_TIGREX then
+                g_ent = e; g_armed = true; g_render_ok = false
+                log1("[brute_tigrex] self-acquired ent=0x%08X (slot %d)", e, s)
+                break
+            end
+        end
+    end
+
     if not g_armed or g_ent == 0 then return end
     if not mhfu.entity_alive(g_ent) then
         g_armed = false; g_ent = 0; return
@@ -311,17 +362,35 @@ function mhfu_tick()
     -- Freeze-gate net: zero stale bits even when the AI tick is halted.
     clear_freeze_gate(g_ent)
 
-    -- Render fix: apply until the section tracker stabilises.
-    if not g_render_ok then
-        g_render_ok = apply_render_fix(g_ent)
-        if g_render_ok then
-            log1("[brute_tigrex] render fix stabilised (section=%d)",
-                 mhfu.read_u16(g_ent + OFF_SECTION))
-        end
+    -- Co-location render fix: every tick, force-render the Brute ONLY while the
+    -- player is in his section (XZ-near).  Far away → leave him to roam.
+    local colocated = apply_render_fix(g_ent)
+    if colocated ~= g_render_ok then
+        g_render_ok = colocated
+        log1("[brute_tigrex] co-location %s (section=%d)",
+             colocated and "ENTER — render-fix on" or "LEAVE — roaming",
+             mhfu.read_u16(g_ent + OFF_SECTION))
     end
 
     -- Aggro maintenance.
     if FORCE_AGGRO then force_aggro(g_ent) end
+
+    -- FK-BIND TRIGGER RE (2026-06-20): the anim loads valid but the per-frame FK
+    -- pointer (blendbuf+0x64) is null → joints unposed → mesh collapses.  Log the
+    -- bind state every tick so we can see WHEN it binds as the player approaches /
+    -- the Brute engages.  blendbuf A = entity+0x150, B = entity+0x1d0; FK ptr @+0x64.
+    do
+        local fkA   = mhfu.read_u32(g_ent + 0x150 + 0x64)
+        local fkB   = mhfu.read_u32(g_ent + 0x1d0 + 0x64)
+        local eng   = mhfu.read_f32(g_ent + 0x5DC)
+        local sec   = mhfu.read_u16(g_ent + OFF_SECTION)
+        local area  = mhfu.get_area_index()
+        if (fkA ~= g_dbg_fkA) or (fkB ~= g_dbg_fkB) then
+            g_dbg_fkA, g_dbg_fkB = fkA, fkB
+            log1("[fkbind] FK_A=0x%08X FK_B=0x%08X engage=%d sec=%d area=%d colocated=%s",
+                 fkA, fkB, (eng and eng > 0.5) and 1 or 0, sec, area, tostring(sec == area))
+        end
+    end
 
     -- Advance probe state every CYCLE_TICKS ticks (~2 s at 2 Hz).
     g_tick_ctr = g_tick_ctr + 1
