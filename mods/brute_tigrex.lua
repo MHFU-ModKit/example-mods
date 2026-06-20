@@ -112,7 +112,7 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 -- If v26 (rest pose, no foreign rotations) renders the splayed-but-present Brute
 -- in-engine, skinning+load+stream-binding are proven and ONLY the cross-game
 -- motion retarget remains.  If v26 ALSO collapses -> the bug is skinning/engine.
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v29_vgidx14.bin"
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v31_skinned.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
