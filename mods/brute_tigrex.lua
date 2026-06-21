@@ -115,11 +115,11 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 -- v39 = rigid-palette Brute mesh + REAL Brute textures (atlas tex 9, full 20-tex
 -- TMH 135888 from file_04898) + native Tigrex skel+anim. Bigger than native (TMH
 -- +60KB) -> RELOCATE path (redirect get_subresource a0 to the grown PAC in xram).
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v42_multitex.bin"
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v44_autoblend.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
-local USE_RELOCATE = true   -- v39 is bigger than native -> relocate, not in-place
+local USE_RELOCATE = false  -- v37 is same-size in-place (native Tigrex textures)
 
 ------------------------------------------------------------------------ CONSTANTS
 
