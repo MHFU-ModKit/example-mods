@@ -112,10 +112,14 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 -- If v26 (rest pose, no foreign rotations) renders the splayed-but-present Brute
 -- in-engine, skinning+load+stream-binding are proven and ONLY the cross-game
 -- motion retarget remains.  If v26 ALSO collapses -> the bug is skinning/engine.
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v37_rigidpalette.bin"
+-- v39 = rigid-palette Brute mesh + REAL Brute textures (atlas tex 9, full 20-tex
+-- TMH 135888 from file_04898) + native Tigrex skel+anim. Bigger than native (TMH
+-- +60KB) -> RELOCATE path (redirect get_subresource a0 to the grown PAC in xram).
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v42_multitex.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
+local USE_RELOCATE = true   -- v39 is bigger than native -> relocate, not in-place
 
 ------------------------------------------------------------------------ CONSTANTS
 
@@ -193,12 +197,18 @@ local MOVESET_LEN = PROBE_COUNT
 local CAPTURE_NATIVE = false  -- inject ON (Brute v25)
 local inject_ok = false
 if not CAPTURE_NATIVE then
-    inject_ok = mhfu.inject_register(TIGREX_FID, BRUTE_PAC)
-    if inject_ok then
-        mhfu.inject_now(TIGREX_FID)   -- prime e->buf / e->obuf / diff fingerprint now
-        mhfu.log("[brute_tigrex] inject_register OK fid=%d '%s' (primed)", TIGREX_FID, BRUTE_PAC)
+    if USE_RELOCATE then
+        inject_ok = mhfu.inject_relocate(TIGREX_FID, BRUTE_PAC, ORIG_PAC)
+        mhfu.log("[brute_tigrex] inject_relocate %s fid=%d '%s'",
+                 inject_ok and "OK" or "FAILED", TIGREX_FID, BRUTE_PAC)
     else
-        mhfu.log("[brute_tigrex] inject_register FAILED — check paths + cold boot")
+        inject_ok = mhfu.inject_register(TIGREX_FID, BRUTE_PAC)
+        if inject_ok then
+            mhfu.inject_now(TIGREX_FID)   -- prime e->buf / e->obuf / diff fingerprint now
+            mhfu.log("[brute_tigrex] inject_register OK fid=%d '%s' (primed)", TIGREX_FID, BRUTE_PAC)
+        else
+            mhfu.log("[brute_tigrex] inject_register FAILED — check paths + cold boot")
+        end
     end
 else
     mhfu.log("[brute_tigrex] CAPTURE_NATIVE: inject SKIPPED — native Tigrex will load")
