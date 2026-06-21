@@ -115,7 +115,13 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 -- v39 = rigid-palette Brute mesh + REAL Brute textures (atlas tex 9, full 20-tex
 -- TMH 135888 from file_04898) + native Tigrex skel+anim. Bigger than native (TMH
 -- +60KB) -> RELOCATE path (redirect get_subresource a0 to the grown PAC in xram).
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v44_autoblend.bin"
+-- v45 = v44's auto-blend geometry RE-SKINNED chain-aware (pmo_skin.auto_skin with
+-- parents+hops=1): each vertex blends only its nearest joint + directly-connected
+-- joints, so tail verts blend adjacent tail joints (40-44) instead of grabbing a
+-- euclidean-near leg/spine bone (0% off-chain bleed vs 36% in v44) -> fixes the
+-- tail scramble. Same-size in-place over file_06185 (1216512 B).
+-- Built reproducibly: tools/build_brute_pac.py --hops 1 (== Blender exporter path).
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v45_chainskin.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
