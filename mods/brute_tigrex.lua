@@ -125,7 +125,7 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 --   tools/build_p3rd_port.py --model file_05248 --geo file_05249 --anim file_05250
 --   --frame file_06185  (== the Blender "Port P3rd Monster" operator).
 -- 1.6 MB > native 1.2 MB -> RELOCATE inject (xram redirect at get_subresource).
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v51_grounded.bin"
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v52_segskin.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
@@ -153,6 +153,9 @@ local OFF_SECTION      = 0x29A  -- u16: monster's tracked section index
 local OFF_FLAGS638     = 0x638  -- u32: bit 0x8000 = render gate B
 local OFF_PURSUE_VEC   = 0x5D0  -- f32 x3: pursuit target vector
 local OFF_ENGAGE       = 0x5DC  -- f32: 1.0 = engaged
+local OFF_POS_Y        = 0x204  -- f32: entity world position Y (+0x200 vec3)
+local OFF_POS_Y_MIRROR = 0x044  -- f32: transform-translation Y mirror (+0x040 vec4)
+local ADDR_CAM_TARGET_Y = 0x09998D54  -- camera target Y = player ground in entity frame
 
 -- Map-paint cheat address (EU).
 local ADDR_PAINTBALL = 0x090B3A6A
@@ -401,27 +404,26 @@ function mhfu_tick()
         log1("[brute_tigrex] co-location %s (section=%d)",
              colocated and "ENTER — render-fix on" or "LEAVE — roaming",
              mhfu.read_u16(g_ent + OFF_SECTION))
+        -- ONE-TIME FLOOR PLACEMENT (2026-06-22): a swap-spawned monster is never
+        -- terrain-placed — its world Y stays 0 while the snow floor is higher, so he
+        -- sinks. Verified live: writing his Y to the floor ONCE holds (the engine
+        -- does NOT reset it). On co-location ENTER, set his Y (+0x200 and the +0x040
+        -- mirror) to the live floor height = the camera-target Y (the engine's player
+        -- ground in the entity frame, 0x09998D54) — fetched, not hardcoded; one write,
+        -- not per-frame. (Approx: player ground ~= monster floor when you're near him;
+        -- refine later for tall monsters.)
+        if colocated then
+            local fy = mhfu.read_f32(ADDR_CAM_TARGET_Y)
+            if fy and fy > 1.0 then
+                mhfu.write_f32(g_ent + OFF_POS_Y, fy)
+                mhfu.write_f32(g_ent + OFF_POS_Y_MIRROR, fy)
+                log1("[brute_tigrex] floor-placed Y=%.0f (one-time)", fy)
+            end
+        end
     end
 
     -- Aggro maintenance.
     if FORCE_AGGRO then force_aggro(g_ent) end
-
-    -- FK-BIND TRIGGER RE (2026-06-20): the anim loads valid but the per-frame FK
-    -- pointer (blendbuf+0x64) is null → joints unposed → mesh collapses.  Log the
-    -- bind state every tick so we can see WHEN it binds as the player approaches /
-    -- the Brute engages.  blendbuf A = entity+0x150, B = entity+0x1d0; FK ptr @+0x64.
-    do
-        local fkA   = mhfu.read_u32(g_ent + 0x150 + 0x64)
-        local fkB   = mhfu.read_u32(g_ent + 0x1d0 + 0x64)
-        local eng   = mhfu.read_f32(g_ent + 0x5DC)
-        local sec   = mhfu.read_u16(g_ent + OFF_SECTION)
-        local area  = mhfu.get_area_index()
-        if (fkA ~= g_dbg_fkA) or (fkB ~= g_dbg_fkB) then
-            g_dbg_fkA, g_dbg_fkB = fkA, fkB
-            log1("[fkbind] FK_A=0x%08X FK_B=0x%08X engage=%d sec=%d area=%d colocated=%s",
-                 fkA, fkB, (eng and eng > 0.5) and 1 or 0, sec, area, tostring(sec == area))
-        end
-    end
 
     -- Advance probe state every CYCLE_TICKS ticks (~2 s at 2 Hz).
     g_tick_ctr = g_tick_ctr + 1
