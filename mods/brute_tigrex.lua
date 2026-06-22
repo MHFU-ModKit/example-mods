@@ -115,17 +115,21 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 -- v39 = rigid-palette Brute mesh + REAL Brute textures (atlas tex 9, full 20-tex
 -- TMH 135888 from file_04898) + native Tigrex skel+anim. Bigger than native (TMH
 -- +60KB) -> RELOCATE path (redirect get_subresource a0 to the grown PAC in xram).
--- v45 = v44's auto-blend geometry RE-SKINNED chain-aware (pmo_skin.auto_skin with
--- parents+hops=1): each vertex blends only its nearest joint + directly-connected
--- joints, so tail verts blend adjacent tail joints (40-44) instead of grabbing a
--- euclidean-near leg/spine bone (0% off-chain bleed vs 36% in v44) -> fixes the
--- tail scramble. Same-size in-place over file_06185 (1216512 B).
--- Built reproducibly: tools/build_brute_pac.py --hops 1 (== Blender exporter path).
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v45_chainskin.bin"
+-- v47 = THE AUTHENTIC Brute Tigrex port (2026-06-22). For the first time this is HIS
+-- real assets, not file_04898(Lavasioth)+Tigrex textures: his geometry (MHP3rd
+-- file_05248 v102 PMO + companion file_05249, parsed by the fixed v102 walker, 2689
+-- verts), his OWN brown tiger-stripe textures (file_05248 TMH), and his OWN 77-clip
+-- moveset (file_05250) retargeted to the Tigrex host (46/48 bone match) + in-game
+-- 3-stream encoded. Chain-aware auto-skinned onto the native Tigrex skeleton (the
+-- Brute shares the Tigrex rig). Built by the generalized porter:
+--   tools/build_p3rd_port.py --model file_05248 --geo file_05249 --anim file_05250
+--   --frame file_06185  (== the Blender "Port P3rd Monster" operator).
+-- 1.6 MB > native 1.2 MB -> RELOCATE inject (xram redirect at get_subresource).
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v47_authentic.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
-local USE_RELOCATE = false  -- v37 is same-size in-place (native Tigrex textures)
+local USE_RELOCATE = true   -- v47 is bigger than native -> relocate (xram)
 
 ------------------------------------------------------------------------ CONSTANTS
 
