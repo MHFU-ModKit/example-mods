@@ -125,7 +125,7 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 --   tools/build_p3rd_port.py --model file_05248 --geo file_05249 --anim file_05250
 --   --frame file_06185  (== the Blender "Port P3rd Monster" operator).
 -- 1.6 MB > native 1.2 MB -> RELOCATE inject (xram redirect at get_subresource).
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v50_tailrest.bin"
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v51_grounded.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
