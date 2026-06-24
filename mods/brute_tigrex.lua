@@ -135,7 +135,15 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 -- joint 2 <- source track 1 (the hip). Sink was NEVER terrain/entity-Y (engine
 -- grounds the entity correctly); it was this render/anim offset. See memory
 -- brute-terrain-sink-re. The MESH sink should be gone; damage already works.
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v53_animfix.bin"
+-- v57 = v53 + BANDED chest skinning-tear WELD (2026-06-24). Red holes at the
+-- chest/throat/front-leg were a skinning tear (coincident verts in adjacent vgroups
+-- skinned to far-apart bones separate when posed). pmo_skin.weld_seams welds each such
+-- cluster whose DOMINANT-bone separation is in [150,300] to one shared bone (can't
+-- split). The band EXCLUDES the wing-root membrane (dominant-dist ~333) which is a
+-- legit stretchy span the engine poses gently — welding it (v54) stiffened the upper
+-- wings. v57 fixes the holes AND leaves the wings at v53 quality.
+-- Rollback chain on disk: v53 (no weld) / v54 (weld-all, wings stiff) / v57 (banded).
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v57_weldband2.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
