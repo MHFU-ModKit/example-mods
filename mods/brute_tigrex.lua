@@ -142,8 +142,16 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 -- split). The band EXCLUDES the wing-root membrane (dominant-dist ~333) which is a
 -- legit stretchy span the engine poses gently — welding it (v54) stiffened the upper
 -- wings. v57 fixes the holes AND leaves the wings at v53 quality.
--- Rollback chain on disk: v53 (no weld) / v54 (weld-all, wings stiff) / v57 (banded).
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v57_weldband2.bin"
+-- v58 = PHASE A: REPLACE the guess(auto_skin)+patch(weld) skinning with PRINCIPLED
+-- weight TRANSFER from the native Tigrex (file_06185 sub1 — already perfectly skinned
+-- to this exact host rig). For each Brute vert, closest-surface barycentric blend of
+-- the native influences (pmo_skin.transfer_weights_from_reference). No nearest-bone
+-- guess, no seam weld -> no rigid spikes, no holes. Offline seam metric collapsed:
+-- INTER-vgroup tear candidates 191(v53)/122(v57) -> 6, worst bone-sep 333 -> 116.
+-- Built by: build_p3rd_port.py --skin transfer (== Blender "Port P3rd Monster").
+-- See docs/MONSTER_PORT_SKINNING_PLAN.md Phase A.
+-- Rollback chain on disk: v53 (no weld) / v54 (weld-all) / v57 (banded) / v58 (transfer).
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v58_transfer.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
