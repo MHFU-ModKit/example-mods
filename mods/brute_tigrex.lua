@@ -83,6 +83,7 @@ local BRUTE_SIZE = 1.05
 -- Aggro range: keep the engine permanently aggroed once engaged.
 local FORCE_AGGRO = false  -- v26 rest-pose visual test needs only the bind pose drawn
 
+
 -- Action cycle period (driven by mhfu_tick at 2 Hz).
 -- CYCLE_TICKS=4 -> ~2 s per action (slow enough to clearly see each clip).
 local CYCLE_TICKS = 4
@@ -125,7 +126,16 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 --   tools/build_p3rd_port.py --model file_05248 --geo file_05249 --anim file_05250
 --   --frame file_06185  (== the Blender "Port P3rd Monster" operator).
 -- 1.6 MB > native 1.2 MB -> RELOCATE inject (xram redirect at get_subresource).
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v52_segskin.bin"
+-- v53 = v52 + ANIM-RETARGET FIX (2026-06-24): the bone-matcher mis-aligned the
+-- collapsed root chain (host has 3 origin bones, source 2), starving the HOST HIP
+-- (joint 2) of its source track -> the vertical-positioning locY(4809) never drove
+-- the hip -> the mesh rendered ~a lower-body-height below the (correctly-placed)
+-- entity origin = the "sink". Fix = bone_match._fix_leading_root_chain (align the
+-- leading origin chain from the tail; surplus host root -> placeholder). Now host
+-- joint 2 <- source track 1 (the hip). Sink was NEVER terrain/entity-Y (engine
+-- grounds the entity correctly); it was this render/anim offset. See memory
+-- brute-terrain-sink-re. The MESH sink should be gone; damage already works.
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v53_animfix.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
@@ -207,7 +217,8 @@ local MOVESET_LEN = PROBE_COUNT
 -- CAPTURE_NATIVE: skip the inject so a NATIVE Tigrex loads (for RE'ing the working
 -- anim path as ground truth). The swap still puts a Tigrex in the Giadrome quest,
 -- but with no inject it's the pristine native Tigrex (real skel/model/anim).
-local CAPTURE_NATIVE = false  -- inject ON (Brute v25)
+local CAPTURE_NATIVE = false  -- the BRUTE (inject ON). Set true to load a pristine native
+                              -- Tigrex in the same quest (control / debugging).
 local inject_ok = false
 if not CAPTURE_NATIVE then
     if USE_RELOCATE then
@@ -398,28 +409,21 @@ function mhfu_tick()
 
     -- Co-location render fix: every tick, force-render the Brute ONLY while the
     -- player is in his section (XZ-near).  Far away → leave him to roam.
+    --
+    -- NOTE (2026-06-24): the old one-time FLOOR-PLACEMENT poke is REMOVED. The
+    -- "sink" was NEVER a terrain/entity-Y problem — the engine grounds the entity
+    -- correctly (entity Y = floor, verified HITL). The mesh sank because the anim
+    -- retarget's bone-matcher mis-aligned the collapsed root chain and starved the
+    -- HOST HIP (joint 2) of its source vertical track (locY 4809). Fixed at the
+    -- source in bone_match._fix_leading_root_chain (v53). The floor poke also wrote
+    -- Y = camera-target-Y, which is a CONSTANT (~270), NOT the floor — so it would
+    -- mis-place him now. Gone for good. See memory `brute-terrain-sink-re`.
     local colocated = apply_render_fix(g_ent)
     if colocated ~= g_render_ok then
         g_render_ok = colocated
         log1("[brute_tigrex] co-location %s (section=%d)",
              colocated and "ENTER — render-fix on" or "LEAVE — roaming",
              mhfu.read_u16(g_ent + OFF_SECTION))
-        -- ONE-TIME FLOOR PLACEMENT (2026-06-22): a swap-spawned monster is never
-        -- terrain-placed — its world Y stays 0 while the snow floor is higher, so he
-        -- sinks. Verified live: writing his Y to the floor ONCE holds (the engine
-        -- does NOT reset it). On co-location ENTER, set his Y (+0x200 and the +0x040
-        -- mirror) to the live floor height = the camera-target Y (the engine's player
-        -- ground in the entity frame, 0x09998D54) — fetched, not hardcoded; one write,
-        -- not per-frame. (Approx: player ground ~= monster floor when you're near him;
-        -- refine later for tall monsters.)
-        if colocated then
-            local fy = mhfu.read_f32(ADDR_CAM_TARGET_Y)
-            if fy and fy > 1.0 then
-                mhfu.write_f32(g_ent + OFF_POS_Y, fy)
-                mhfu.write_f32(g_ent + OFF_POS_Y_MIRROR, fy)
-                log1("[brute_tigrex] floor-placed Y=%.0f (one-time)", fy)
-            end
-        end
     end
 
     -- Aggro maintenance.
