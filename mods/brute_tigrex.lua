@@ -92,6 +92,38 @@ local CYCLE_TICKS = 4
 -- Keep at 2 for this HITL session so we can correlate a1 -> screen clip.
 local LOG_LEVEL = 1   -- 1 = spawn/inject/render/death only (CYCLE spam off)
 
+-- ── USB screen capture (psplink hostfs → Mac) ──────────────────────────────
+-- Records the live game over USB without a capture card. Run `tools/psp_capture`
+-- on the Mac first (it launches usbhostfs_pc + tails the stream); then hold the
+-- combo below for ~1 s in-game to toggle recording on/off. Streams to
+-- host0:/cap/stream.bin. L+R+DOWN avoids opening the map / pause menu, and the
+-- capture thread never blocks the game if the Mac host isn't connected.
+-- MASTER SWITCH for the whole screen-capture feature. false = disabled: NO
+-- capture code runs at all (no auto-record, no combo, no framebuffer grab, no
+-- USB). The capture subsystem stays compiled into the framework + the project
+-- (capture.cpp, psp_capture.py, this block) — set this back to true to re-enable.
+local CAPTURE_ENABLED  = false
+local CAPTURE_TOGGLE   = mhfu.CTRL_L | mhfu.CTRL_R | mhfu.CTRL_DOWN
+local CAPTURE_SCALE    = 2    -- 1=full 480x272 (slow) | 2=half 240x136 (~15 fps)
+local CAPTURE_INTERVAL = 66   -- ms between grabs (66 ≈ 15 fps)
+-- WHERE frames go. ms0: = write to the Memory Stick (reliable; pull via USB
+-- mass-storage after, convert with `psp-capture --from-file`). host0: = live
+-- over the psplink USB link (needs the Mac↔PSP usbhostfs handshake — blocked by
+-- CFW USB on this setup). Default ms0 since the live link won't connect.
+local CAPTURE_TARGET   = "ms0:/PSP/cap/stream.bin"
+-- local CAPTURE_TARGET = "host0:/cap/stream.bin"   -- live-over-USB alternative
+-- AUTO: start capture automatically whenever in active gameplay (quest 17 or
+-- village 22) so recording the Brute needs no button press. The combo still
+-- works as a manual override.
+local CAPTURE_AUTO     = true
+-- DEBUG: log the live button mask on change (to diagnose why the combo wasn't
+-- firing). Set false once the combo is confirmed.
+local CAPTURE_DEBUG_BTN = false
+local g_cap_on      = false   -- manual (combo) state
+local g_cap_prev    = false
+local g_cap_auto_on = false   -- auto (screen-state) state
+local g_btn_last    = -1
+
 -- Inject paths on the memstick.
 local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 -- v7 = layout-identical PAC (each sub padded to native file_06185 offset/size,
@@ -400,6 +432,45 @@ end, 10)
 --    force aggro, and paint the map.
 function mhfu_tick()
     mhfu.write_u8(ADDR_PAINTBALL, 0xFF)   -- keep the boss visible on the map
+
+    -- USB screen capture: button-mask debug + manual combo + auto in-gameplay.
+    -- (Runs before any early return so it works on the way in / in the village.)
+    -- Gated by the CAPTURE_ENABLED master switch — false = nothing here runs.
+    if CAPTURE_ENABLED then
+        local b = mhfu.buttons()
+        if CAPTURE_DEBUG_BTN and b ~= g_btn_last then
+            g_btn_last = b
+            if b ~= 0 then log1("[brute_tigrex] btn=0x%X", b) end
+        end
+
+        -- Manual combo (edge-detected).
+        local pressed = (b & CAPTURE_TOGGLE) == CAPTURE_TOGGLE
+        if pressed and not g_cap_prev then
+            g_cap_on = not g_cap_on
+            mhfu.capture(g_cap_on, CAPTURE_SCALE, CAPTURE_INTERVAL, CAPTURE_TARGET)
+            log1("[brute_tigrex] capture(combo) %s -> %s", g_cap_on and "ON" or "OFF", CAPTURE_TARGET)
+        end
+        g_cap_prev = pressed
+
+        -- Auto: stream while IN-QUEST only (17). NOT village (22) — retreating
+        -- goes quest(17)->loading->village(22), and re-capturing in the village
+        -- would truncate/overwrite the quest recording. In-quest-only means the
+        -- loading transition cleanly stops + flushes the file (sceIoClose), and
+        -- the village leaves it intact to pull over USB.
+        if CAPTURE_AUTO and not g_cap_on then
+            local s = mhfu.get_screen_state()
+            local active = (s == 17)
+            if active and not g_cap_auto_on then
+                g_cap_auto_on = true
+                mhfu.capture(true, CAPTURE_SCALE, CAPTURE_INTERVAL, CAPTURE_TARGET)
+                log1("[brute_tigrex] capture(auto) ON — screen_state=%d -> %s", s, CAPTURE_TARGET)
+            elseif (not active) and g_cap_auto_on then
+                g_cap_auto_on = false
+                mhfu.capture(false)
+                log1("[brute_tigrex] capture(auto) OFF — screen_state=%d", s)
+            end
+        end
+    end
 
     -- Self-acquire: if we don't have the entity yet (e.g. the spawn event already
     -- fired before a hot-reload), scan the registry for the Tigrex-host Brute so the
