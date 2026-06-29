@@ -190,7 +190,16 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 -- (auto_skin) — fixes the source-skeleton "crunch/bends-wrong" deformation. Bigger than
 -- native (1.6 MB) -> relocate. Built by: build_p3rd_port.py --source-skeleton --skin
 -- source. v58_transfer (retarget-onto-host + transfer skin) stays the alt finished build.
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v62_sourceweights.bin"
+--
+-- v63 (2026-06-29): + CLIP-TIMING fix. The engine plays each clip to its OWN keyframe
+-- length + loop flag (there is NO separate action-duration field in the Tigrex descriptor
+-- table @0x09D5A580 = file_06108+0x40440 — its 8-byte rows hold action_id+8 + small
+-- params, no frame count). So the abrupt-stop bug was OUR rest_bone padding stretching
+-- every short clip to frame 180 (play, then ~2s freeze on the last pose, then loop/end).
+-- anim_ingame.from_flat_anim now spans the pad to the clip's REAL length -> his clips
+-- play at their authored timing (77/77 lengths match the source moveset). Loop flags were
+-- already preserved from source.
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v63_clipfix.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
