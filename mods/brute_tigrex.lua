@@ -183,7 +183,14 @@ local INJECT_DIR = "ms0:/PSP/PLUGINS/mhfu_framework/inject"
 -- Built by: build_p3rd_port.py --skin transfer (== Blender "Port P3rd Monster").
 -- See docs/MONSTER_PORT_SKINNING_PLAN.md Phase A.
 -- Rollback chain on disk: v53 (no weld) / v54 (weld-all) / v57 (banded) / v58 (transfer).
-local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v58_transfer.bin"
+--
+-- v62 (2026-06-29): SOURCE-SKELETON + the Brute's OWN AUTHENTIC skin. The v102 bone
+-- palette (header field 10 = Weight{slot,bone}[]) is now decoded by pmo_p3rd and ported
+-- 1:1 onto the source rig (pmo_skin.from_source_influences) instead of guessed
+-- (auto_skin) — fixes the source-skeleton "crunch/bends-wrong" deformation. Bigger than
+-- native (1.6 MB) -> relocate. Built by: build_p3rd_port.py --source-skeleton --skin
+-- source. v58_transfer (retarget-onto-host + transfer skin) stays the alt finished build.
+local BRUTE_PAC  = INJECT_DIR .. "/brute_tigrex_v62_sourceweights.bin"
 local ORIG_PAC   = INJECT_DIR .. "/file_06185.bin.orig"
 -- engine fid = extracted index + 1 (file_06185 -> fid 6186; Phase 4 RE confirmed)
 local TIGREX_FID = 6185
