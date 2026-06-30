@@ -281,8 +281,9 @@ local MOVESET_LEN = PROBE_COUNT
 -- CAPTURE_NATIVE: skip the inject so a NATIVE Tigrex loads (for RE'ing the working
 -- anim path as ground truth). The swap still puts a Tigrex in the Giadrome quest,
 -- but with no inject it's the pristine native Tigrex (real skel/model/anim).
-local CAPTURE_NATIVE = false  -- the BRUTE (inject ON). Set true to load a pristine native
-                              -- Tigrex in the same quest (control / debugging).
+local CAPTURE_NATIVE = true   -- COMBAT-LATCH RE 2026-06-30: pristine native Tigrex via the
+                              -- swap (no Brute inject) to isolate the engage-gate flicker.
+                              -- Set back to false to ship the Brute (inject ON).
 local inject_ok = false
 if not CAPTURE_NATIVE then
     if USE_RELOCATE then
