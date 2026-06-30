@@ -419,6 +419,23 @@ mhfu.on_bigmonster_death(function(ent, mtype, slot)
     log1("[brute_tigrex] death — AI disarmed")
 end)
 
+-- 3b. on_bigmonster_damaged (NEW EVENT — task A). Fires when the Brute TAKES
+--     damage (i.e. YOU hit HIM). Poll-derived (5 Hz), observe-only, zero engine
+--     detours (reuses the HP edge-tracker that drives on_bigmonster_death).
+--     Args: (entity_ptr, monster_type, amount, hp_after, slot).
+--     This verifies the new event end-to-end — it's the player->monster path,
+--     which works regardless of the separate "his attacks don't damage ME" bug.
+--     A mod can use it to REACT to being hit (re-assert a forced action, trigger
+--     a custom move, count chip damage). To suppress the engine's own flinch
+--     instead, intercept on_bigmonster_action (the flinch dispatches through the
+--     executor). Set DAMAGE_LOG=false to silence.
+local DAMAGE_LOG = true
+mhfu.on_bigmonster_damaged(function(ent, mtype, amount, hp, slot)
+    if not DAMAGE_LOG then return end
+    mhfu.log("[brute_tigrex] DAMAGED ent=0x%08X mtype=%d amount=%d hp=%d slot=%d",
+             ent, mtype, amount, hp, slot)
+end)
+
 -- 4. Action-force hook: the coherent seam (executor 0x09AC5228).
 --    Fires on the exec thread (game-thread marshalled) for every executor call
 --    on a Tigrex entity.  We return the current probe a1; the engine fans it
