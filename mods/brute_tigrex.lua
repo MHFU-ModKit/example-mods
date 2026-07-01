@@ -221,6 +221,18 @@ local A1_ANGRY_BITE_FWD  = 0x29   -- TIGREX_ANGRY_BITE_FORWARD(input 0x05A1)
 local A1_ANGRY_JUMP_FWD  = 0x2F   -- TIGREX_ANGRY_JUMP_FORWARD(input 0x05A7)
 local A1_ANGRY_TURN_LEFT = 0x08   -- TIGREX_ANGRY_TURN_LEFT   (input 0x0580)
 
+-- COMBAT-LATCH RE (Path 1, 2026-07-01): FORCE a swap-spawned NATIVE Tigrex into ONE
+-- damaging action, held continuously (looping), but ONLY once the player is
+-- co-located (g_render_ok) so he doesn't lock mid-traversal. Player then runs into
+-- the armed hitbox. This tests whether the native Tigrex's REAL armed attack
+-- deposits damage on a swap-spawn:
+--   HP drops  -> bug is "AI never commits a real attack" (fixable via escalation).
+--   No drop   -> deposit branch is structurally gated (deeper manager-wiring wall).
+-- Candidates: SPIN 0x2B (wide tail sweep, stationary — best to walk into),
+--             CHARGE 0x11, BITE_FWD 0x29.
+local FORCE_DAMAGE_TEST   = false   -- clean passthrough for the brain-2 diff capture
+local FORCE_DAMAGE_ACTION = A1_ANGRY_SPIN
+
 -- Entity cell offsets (from ai_script.h).
 local OFF_FREEZE_GATE  = 0x4B8  -- u32: bits 0x100|0x10000 halt AI tick
 local OFF_SECTION      = 0x29A  -- u16: monster's tracked section index
@@ -310,6 +322,7 @@ local g_armed     = false -- action-force is active
 local g_move_idx  = 1     -- current index into PROBE_IDS
 local g_tick_ctr  = 0     -- ticks since last state advance
 local g_render_ok = false -- render fix applied
+local g_forced_once = false -- one-shot log when the damage-force first engages
 local g_dbg_fkA   = -1     -- last-seen FK bind ptr A (for change-logging)
 local g_dbg_fkB   = -1     -- last-seen FK bind ptr B
 
@@ -430,7 +443,7 @@ end)
 --     a custom move, count chip damage). To suppress the engine's own flinch
 --     instead, intercept on_bigmonster_action (the flinch dispatches through the
 --     executor). Set DAMAGE_LOG=false to silence.
-local DAMAGE_LOG = true
+local DAMAGE_LOG = false
 mhfu.on_bigmonster_damaged(function(ent, mtype, amount, hp, slot)
     if not DAMAGE_LOG then return end
     mhfu.log("[brute_tigrex] DAMAGED ent=0x%08X mtype=%d amount=%d hp=%d slot=%d",
@@ -449,17 +462,22 @@ end)
 -- wrapper is NOT installed in this build (no on_bigmonster_action registration).
 -- If the quest loads + the Brute renders with this off, the crash was the AI hook.
 -- Re-enable the block below after the isolation result.
---[[ DISABLED FOR ISOLATION TEST
+-- PATH-1 COMBAT-LATCH TEST: hold ONE damaging action once co-located.
+local g_act_calls = 0   -- executor-call counter (diagnostic throttle)
 mhfu.on_bigmonster_action(function(ctx)
+    if not FORCE_DAMAGE_TEST then return ctx.action_id end
     if not g_armed then return ctx.action_id end
     if ctx.entity ~= g_ent then return ctx.action_id end
     clear_freeze_gate(ctx.entity)
-    local a1 = PROBE_IDS[g_move_idx]
-    log2("[brute_tigrex] ACTION a1=0x%02X step=%d/%d engine=0x%02X -- WATCH SCREEN",
-         a1, g_move_idx, PROBE_COUNT, ctx.action_id)
-    return a1
+    -- DIAGNOSTIC: log every 20th executor call so we can confirm the callback
+    -- fires at all + see the brain's engine action_id vs our forced spin.
+    g_act_calls = g_act_calls + 1
+    if (g_act_calls % 20) == 1 then
+        log1("[brute_tigrex] EXEC call#%d engine=0x%02X force=0x%02X render_ok=%s",
+             g_act_calls, ctx.action_id, FORCE_DAMAGE_ACTION, tostring(g_render_ok))
+    end
+    return FORCE_DAMAGE_ACTION
 end, 10)
---]]
 
 -- 5. Per-tick maintenance (2 Hz worker thread).
 --    Advance the state machine, clear the freeze gate, apply the render fix,
