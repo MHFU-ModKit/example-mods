@@ -50,7 +50,8 @@ local OFF_PLAYER_XYZ = 0x40
 
 local OFF_POS      = 0x200
 local OFF_SECTION  = 0x29A
-local OFF_OUTER    = 0x299
+local OFF_MAIN     = 0x298   -- act_set main_state (AI_SCRIPTING_ENGINE §33)
+local OFF_OUTER    = 0x299   -- act_set sub_state; named "outer" before we knew what it was
 local OFF_INNER    = 0x1D5
 local OFF_BC       = 0x0BC
 local OFF_ENGAGE   = 0x5DC
@@ -137,37 +138,105 @@ local g_tk = 0
 local g_last_act = -1
 local g_forced = 0
 
+-- Drive the BEHAVIOUR channel directly — the test that decides whether a ported
+-- monster can be given its own moves without a host analogue to copy.
+--
+-- This is `act_set` (0x09AC8818) reimplemented with plain memory writes, because
+-- the framework has no native-call binding yet. The engine's version also clears
+-- the per-slot cursors behind two condition checks; we do the unconditional part
+-- only, which is the minimum a handler needs to run from its first phase:
+--   +0x460/+0x461 = the previous pair (handlers read it on transitions)
+--   +0x298/+0x299 = the new pair
+--   +0x1D5..+0x1D7 = 0        <- the phase counter; a handler that finds this
+--                                non-zero skips its own "start the clip" phase
+--
+-- ⚠️ PULSED, never per-tick. Per-tick maintenance of a big monster is what made
+-- swapped monsters look combat-broken for two months (CLAUDE.md rule 8), and
+-- rewriting the state every tick would restart the move before it ever reaches
+-- its hitbox frames — the same failure a held a1-force already demonstrated.
+local FORCE_STATE_MAIN   = -1    -- >= 0 arms behaviour-channel forcing
+local FORCE_STATE_SUB    = 0
+local FORCE_STATE_PERIOD = 24    -- ticks between pulses (~12 s at ~2 ticks/s)
+local g_state_forced = 0
+
+local function act_set(ent, main, sub)
+  mhfu.write_u8(ent + 0x460, mhfu.read_u8(ent + OFF_MAIN))
+  mhfu.write_u8(ent + 0x461, mhfu.read_u8(ent + OFF_OUTER))
+  mhfu.write_u8(ent + OFF_MAIN,  main)
+  mhfu.write_u8(ent + OFF_OUTER, sub)
+  mhfu.write_u8(ent + 0x1D5, 0)
+  mhfu.write_u8(ent + 0x1D6, 0)
+  mhfu.write_u8(ent + 0x1D7, 0)
+end
+
+-- 🔴 A big monster runs on TWO channels and this hook only moves ONE of them.
+-- The executor 0x09AC5228(entity, a1) picks the CLIP; act_set(entity, main, sub)
+-- writes entity+0x298/+0x299 and the species overlay runs
+-- switch(+0x298) -> switch(+0x299) into the per-action code that owns the
+-- hitboxes and effects (docs/AI_SCRIPTING_ENGINE.md §33). So forcing a1 changes
+-- what you SEE, never what the move DOES. This probe records both channels at
+-- every dispatch so the pairing can be checked against the offline table from
+-- `tools/em_moveset.py --states`.
+local FORCE_AFTER = 600          -- dispatches to observe before arming the force
+local g_disp, g_armed = 0, false
+local g_pairs = {}               -- "main:sub:a1" -> count, for NEW-triple logging
+local g_state = -1               -- last (main,sub) seen, for transition logging
+
 if LOG_ACTIONS or FORCE_ACTION ~= 0 then
   local last_fire = -100000
   mhfu.on_bigmonster_action(function(ctx)
-    -- Returning nil leaves the id untouched (`ret = q->in` unless a number comes
-    -- back), so the logging half is a pure tap on the executor seam 0x09AC5228.
     local a = ctx.action_id
+    local main = mhfu.read_u8(ctx.entity + OFF_MAIN)
+    local sub  = mhfu.read_u8(ctx.entity + OFF_OUTER)
     g_acts[a] = (g_acts[a] or 0) + 1
-    if FORCE_ACTION ~= 0 and (FORCE_PERIOD <= 0 or (g_tk - last_fire) >= FORCE_PERIOD) then
-      last_fire = g_tk
-      g_forced = g_forced + 1
-      -- the engine ORs the freeze bits in during forced fire; clear or the AI
-      -- tick halts and the monster stands still.
-      local g = mhfu.read_u32(ctx.entity + OFF_FREEZE)
-      if (g & FREEZE_BITS) ~= 0 then mhfu.write_u32(ctx.entity + OFF_FREEZE, g & ~FREEZE_BITS) end
-      g_last_act = FORCE_ACTION
-      log("[brute] FORCE a1=%d (over %d) #%d t=%d", FORCE_ACTION, a, g_forced, g_tk)
-      return FORCE_ACTION
+    g_disp = g_disp + 1
+
+    -- the behaviour channel's own transitions, independent of what we force
+    local st = main * 256 + sub
+    if st ~= g_state then
+      g_state = st
+      log("[state] main=%d sub=%d (a1=%d) t=%d d=%d%s", main, sub, a, g_tk, g_disp,
+          g_armed and " FORCED" or "")
     end
-    -- ⚠️ Log every CHANGE, not just an id's first sighting. Logging only first
-    -- occurrences made "3 of 28 dispatched in reach" mean "3 of 28 FIRST
-    -- SIGHTINGS" — the leading edge of the stream, not the stream.
+
+    -- the pairing under test: which clip does this behaviour state ask for?
+    local key = string.format("%d:%d:%d", main, sub, a)
+    if g_pairs[key] == nil then
+      g_pairs[key] = 0
+      if not g_armed then
+        log("[pair] (%d,%d) -> a1=%d  t=%d", main, sub, a, g_tk)
+      end
+    end
+    g_pairs[key] = g_pairs[key] + 1
+
+    if FORCE_ACTION ~= 0 and g_disp > FORCE_AFTER then
+      if not g_armed then
+        g_armed = true
+        log("[brute] FORCE PHASE BEGINS a1=%d after %d dispatches t=%d",
+            FORCE_ACTION, g_disp, g_tk)
+      end
+      if FORCE_PERIOD <= 0 or (g_tk - last_fire) >= FORCE_PERIOD then
+        last_fire = g_tk
+        g_forced = g_forced + 1
+        local g = mhfu.read_u32(ctx.entity + OFF_FREEZE)
+        if (g & FREEZE_BITS) ~= 0 then mhfu.write_u32(ctx.entity + OFF_FREEZE, g & ~FREEZE_BITS) end
+        g_last_act = FORCE_ACTION
+        log("[brute] FORCE a1=%d (over %d) main=%d sub=%d #%d t=%d",
+            FORCE_ACTION, a, main, sub, g_forced, g_tk)
+        return FORCE_ACTION
+      end
+    end
     if a ~= g_last_act then
       g_last_act = a
-      log("[brute] ACTION a1=%d (x%d) t=%d", a, g_acts[a], g_tk)
+      log("[brute] ACTION a1=%d (x%d) main=%d sub=%d t=%d", a, g_acts[a], main, sub, g_tk)
     end
     return nil
   end, 10)
   if FORCE_ACTION ~= 0 then
-    log("[brute] action force ARMED a1=%d period=%d", FORCE_ACTION, FORCE_PERIOD)
+    log("[brute] action force ARMED a1=%d period=%d after=%d dispatches",
+        FORCE_ACTION, FORCE_PERIOD, FORCE_AFTER)
   else
-    log("[brute] action logging ARMED (observe-only)")
+    log("[brute] action logging ARMED (observe-only, two-channel)")
   end
 end
 
@@ -186,6 +255,13 @@ function mhfu_tick()
     mhfu.entity_make_visible(ent, mhfu.get_area_index())
     local g = mhfu.read_u32(ent + OFF_FREEZE)
     if (g & FREEZE_BITS) ~= 0 then mhfu.write_u32(ent + OFF_FREEZE, g & ~FREEZE_BITS) end
+  end
+  if FORCE_STATE_MAIN >= 0 and (tk % FORCE_STATE_PERIOD) == 0 then
+    local m0, s0 = mhfu.read_u8(ent+OFF_MAIN), mhfu.read_u8(ent+OFF_OUTER)
+    act_set(ent, FORCE_STATE_MAIN, FORCE_STATE_SUB)
+    g_state_forced = g_state_forced + 1
+    log("[actset] (%d,%d) -> (%d,%d) #%d t=%d", m0, s0,
+        FORCE_STATE_MAIN, FORCE_STATE_SUB, g_state_forced, tk)
   end
   local msec, psec = mhfu.read_u16(ent+OFF_SECTION), mhfu.get_area_index()
   local px = read_f(PLAYER_ENT + OFF_PLAYER_XYZ)
