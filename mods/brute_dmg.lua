@@ -156,6 +156,7 @@ local g_forced = 0
 -- its hitbox frames — the same failure a held a1-force already demonstrated.
 local FORCE_STATE_MAIN   = -1    -- >= 0 arms behaviour-channel forcing
 local FORCE_STATE_SUB    = 0
+local FORCE_STATE_RANGE  = 1500  -- only pulse when the hunter is this close
 local FORCE_STATE_PERIOD = 24    -- ticks between pulses (~12 s at ~2 ticks/s)
 local g_state_forced = 0
 
@@ -167,6 +168,12 @@ local function act_set(ent, main, sub)
   mhfu.write_u8(ent + 0x1D5, 0)
   mhfu.write_u8(ent + 0x1D6, 0)
   mhfu.write_u8(ent + 0x1D7, 0)
+  -- 🔴 Repeated forcing makes the engine OR in the exhaustion bits and halt the
+  -- AI tick entirely (aggro survives, the monster just stops). tigrex_spin.lua
+  -- hit this driving the SAME move over and over, which is exactly what a damage
+  -- test does. Clear on the pulse — still not per-tick.
+  local g = mhfu.read_u32(ent + OFF_FREEZE)
+  if (g & FREEZE_BITS) ~= 0 then mhfu.write_u32(ent + OFF_FREEZE, g & ~FREEZE_BITS) end
 end
 
 -- 🔴 A big monster runs on TWO channels and this hook only moves ONE of them.
@@ -248,7 +255,17 @@ function mhfu_tick()
   tk = tk + 1
   g_tk = tk
   local php = mhfu.get_player_hp()
-  if php ~= last_php then log("[brute] PLAYER HP %d -> %d (t=%d)", last_php, php, tk); last_php = php end
+  local hp_drop = 0
+  if php ~= last_php then
+    -- ⚠️ Only believe a drop between two SANE readings. When the hunter carts,
+    -- the world frame shifts and HP reads garbage for a few ticks (a measured
+    -- 53 -> 1179748 -> 131172 -> 100), which would otherwise book a colossal hit.
+    if last_php >= 0 and last_php <= 200 and php <= 200 and php < last_php then
+      hp_drop = last_php - php
+    end
+    log("[brute] PLAYER HP %d -> %d (t=%d)", last_php, php, tk)
+    last_php = php
+  end
   local ent = g_ent
   if ent == 0 or not mhfu.entity_alive(ent) then return end
   if MAINTAIN then
@@ -256,18 +273,29 @@ function mhfu_tick()
     local g = mhfu.read_u32(ent + OFF_FREEZE)
     if (g & FREEZE_BITS) ~= 0 then mhfu.write_u32(ent + OFF_FREEZE, g & ~FREEZE_BITS) end
   end
-  if FORCE_STATE_MAIN >= 0 and (tk % FORCE_STATE_PERIOD) == 0 then
-    local m0, s0 = mhfu.read_u8(ent+OFF_MAIN), mhfu.read_u8(ent+OFF_OUTER)
-    act_set(ent, FORCE_STATE_MAIN, FORCE_STATE_SUB)
-    g_state_forced = g_state_forced + 1
-    log("[actset] (%d,%d) -> (%d,%d) #%d t=%d", m0, s0,
-        FORCE_STATE_MAIN, FORCE_STATE_SUB, g_state_forced, tk)
-  end
   local msec, psec = mhfu.read_u16(ent+OFF_SECTION), mhfu.get_area_index()
   local px = read_f(PLAYER_ENT + OFF_PLAYER_XYZ)
   local pz = read_f(PLAYER_ENT + OFF_PLAYER_XYZ + 8)
   local mx, mz = read_f(ent+OFF_POS), read_f(ent+OFF_POS+8)
   local d = math.floor(math.sqrt((mx-px)^2 + (mz-pz)^2))
+  -- 🔴 Pulse ONLY when the monster is in the player's section and within reach.
+  -- Forcing a STATIONARY attack (the spin) from the moment it spawns pins the
+  -- monster in place, so it never roams to the player and the run reports
+  -- "never co-located, nothing measured" — the force defeats its own test.
+  if FORCE_STATE_MAIN >= 0 and msec == psec and d <= FORCE_STATE_RANGE
+     and (tk % FORCE_STATE_PERIOD) == 0 then
+    local m0, s0 = mhfu.read_u8(ent+OFF_MAIN), mhfu.read_u8(ent+OFF_OUTER)
+    act_set(ent, FORCE_STATE_MAIN, FORCE_STATE_SUB)
+    g_state_forced = g_state_forced + 1
+    log("[actset] (%d,%d) -> (%d,%d) d=%d #%d t=%d", m0, s0,
+        FORCE_STATE_MAIN, FORCE_STATE_SUB, d, g_state_forced, tk)
+  end
+  -- Attribute the drop: HP alone cannot tell a monster hit from cold damage or
+  -- a fall, so record the distance and the behaviour state it happened in.
+  if hp_drop > 0 then
+    log("[hit] -%d HP  d=%d main=%d sub=%d  t=%d", hp_drop, d,
+        mhfu.read_u8(ent+OFF_MAIN), mhfu.read_u8(ent+OFF_OUTER), tk)
+  end
   local line = string.format(
     "sec=%d/%d%s out=%d in=%d bc0=%d eng=%.1f node=0x%X hp=%d d=%d",
     msec, psec, (msec == psec) and " SAME" or "",
