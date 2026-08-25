@@ -290,8 +290,10 @@ function mhfu_tick()
     log("[actset] (%d,%d) -> (%d,%d) d=%d #%d t=%d", m0, s0,
         FORCE_STATE_MAIN, FORCE_STATE_SUB, d, g_state_forced, tk)
   end
-  -- Attribute the drop: HP alone cannot tell a monster hit from cold damage or
-  -- a fall, so record the distance and the behaviour state it happened in.
+  -- Attribute the drop: HP alone cannot tell a connected attack from TRIP-OVER
+  -- damage (a big monster walking into the hunter, historically < 15 points),
+  -- a small monster, or a fall — so record distance and behaviour state.
+  -- (MHFU has NO cold damage; coldness only drains max stamina faster.)
   if hp_drop > 0 then
     log("[hit] -%d HP  d=%d main=%d sub=%d  t=%d", hp_drop, d,
         mhfu.read_u8(ent+OFF_MAIN), mhfu.read_u8(ent+OFF_OUTER), tk)
