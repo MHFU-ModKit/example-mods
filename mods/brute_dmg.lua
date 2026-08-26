@@ -80,7 +80,12 @@ end
 
 local function u32_to_float(u)
   if u == 0 then return 0.0 end
-  local sign = 1.0; if u >= 0x80000000 then sign = -1.0; u = u - 0x80000000 end
+  -- 🔴 `if u >= 0x80000000` is ALWAYS TRUE on the PSP build — lua_Integer is 32
+  -- bits, so the literal wraps to -2147483648. Every float this decoded came out
+  -- SIGN-FLIPPED, and it hid because the only thing computed from these was a
+  -- distance, which negating both endpoints leaves unchanged. Test the bit.
+  -- (mhfu.read_f32 is correct and is the better answer; see mhfu_port.lua.)
+  local sign = 1.0; if (u & 0x80000000) ~= 0 then sign = -1.0 end; u = u & 0x7FFFFFFF
   local exp, mant = (u >> 23) & 0xFF, u & 0x7FFFFF
   if exp == 0   then return sign * mant * (2.0 ^ -149) end
   if exp == 255 then return sign * math.huge end
