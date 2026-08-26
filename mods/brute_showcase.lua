@@ -73,10 +73,22 @@ mhfu.port.mod("brute_showcase", function(P)
       charge_b   = { main = 3, sub = 6,  clip = "charge"     },
       charge_c   = { main = 2, sub = 13, clip = "charge"     },
       charge_d   = { main = 1, sub = 1,  clip = "charge"     },
-      -- Main 4 is the reaction/trap bank. (4,15) asks the host for a1 83 and
-      -- (4,8) for 70/71/77/78 — trap semantics on the host side too, so the
-      -- behaviour and the clip mean the same thing rather than merely looking
-      -- like it. Both are stationary, which is what a pinned monster needs.
+      -- 🔴 THESE TWO ARE WRONG AND THE MEASUREMENT SAYS SO. They were picked off
+      -- the offline dispatcher table because (4,15) asks for a1 83 and (4,8) for
+      -- 70/71/77/78 — trap semantics on the host side too. But main 4 is the
+      -- DAMAGE-REACTION bank: on an undamaged, untrapped monster those handlers
+      -- return on their first tick. Live, 411 of 411 forced moves lasted exactly
+      -- ONE tick, so the clip restarted from frame 0 twice a second and never
+      -- played through; the engine went to (2,4) every single time and (2,4) is
+      -- a pursuit state, so the pin then fought it for 526-646 units per tick.
+      -- Played by hand that reads as "he floats forward and clips back and no
+      -- animation finishes", which is exactly what it is.
+      --
+      -- `tools/em_state_census.py`: the engine enters (4,15) and (4,8) ZERO
+      -- times in ~1600 observed transitions. The replacement has to come from
+      -- the HOLDS + STATIONARY column — (2,1) holds 11.5 ticks at 45 units/tick,
+      -- and (0,7) holds 15.8 and asks for a1 80, the shocktrap clip. Left as-is
+      -- deliberately so the next session can diff the fix against the symptom.
       trapped    = { main = 4, sub = 15, clip = "trapped"    },
       break_free = { main = 4, sub = 8,  clip = "break_free" },
     },
@@ -161,10 +173,12 @@ mhfu.port.mod("brute_showcase", function(P)
 
   brute:brain(function(s)
     -- ---- the gate: same section AND actually hunting the player -------------
-    -- Engage (+0x5DC) is the engine's own "combat mode entered" flag — the same
-    -- state the yellow eye marker reflects. Outside it the Brute is left
-    -- completely alone, which is the point: the scripted loop is what he does
-    -- when he decides to fight, not a permanent override.
+    -- ⚠️ Engage (+0x5DC) is DETECTED/PURSUING, not full combat — the '!' over his
+    -- head, not the yellow eye. Played by hand the yellow eye never appeared at
+    -- all: a swapped big monster detects and never latches combat. So this gate
+    -- means "has noticed the hunter", and it flickers. Outside it the Brute is
+    -- left completely alone, which is still the point — the scripted loop is
+    -- what he does when he commits, not a permanent override.
     if not (s.same_section and s.engaged) then
       if phase ~= "off" then
         brute:release()
