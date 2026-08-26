@@ -82,6 +82,22 @@ mhfu.port.mod("brute_showcase", function(P)
     },
   }
 
+  -- ------------------------------------------------------------ modes
+  -- SCRIPT = false loads the port and leaves his AI COMPLETELY ALONE: the quest
+  -- swap and the asset inject still happen, so you get the ported Brute with his
+  -- own skeleton, mesh, textures and animations fighting you with the host
+  -- Tigrex's brain and his host moveset. That is the right mode for "does the
+  -- port actually work", and the right one to play first — the scripted loop is
+  -- deliberately unnatural.
+  --
+  -- PIN = false keeps the scripted loop but drops the coordinate lock. The lock
+  -- is what makes his movement look odd: it rewrites his position twice a second
+  -- while the animation keeps playing, so he visibly snaps back (a take logged
+  -- 152 corrections, some of 400+ units). Without it he can reach the hunter,
+  -- which is the trade.
+  local SCRIPT        = true
+  local PIN           = true   -- lock his coordinates during the pinned phase
+
   -- ------------------------------------------------------------ tuning
   local CHARGES       = { "charge_a", "charge_b", "charge_c", "charge_d" }
   local CHARGE_MIN_TRAVEL = 250  -- a charge that moves less than this per tick
@@ -123,7 +139,6 @@ mhfu.port.mod("brute_showcase", function(P)
   local CHARGE_EVERY  = 7      -- ticks between charge pulses (~3.5 s)
   local TRAPPED_FOR   = 8      -- ticks of struggling (~4 s)
   local BREAK_FOR     = 5      -- ticks of breaking free (~2.5 s)
-  local PIN           = true   -- lock his coordinates during the pinned phase
 
   -- ------------------------------------------------------------ the brain
   local phase, since, last_note = "off", 0, ""
@@ -137,6 +152,11 @@ mhfu.port.mod("brute_showcase", function(P)
         p, math.floor(s.dist), math.floor(s.travelled), s.main, s.sub, s.hp,
         math.floor(s.x), math.floor(s.z), s.section,
         math.floor(s.px), math.floor(s.pz), s.area, why or "")
+  end
+
+  if not SCRIPT then
+    log("[showcase] assets only — the Brute is loaded, his AI is untouched")
+    return
   end
 
   brute:brain(function(s)
