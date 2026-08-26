@@ -22,8 +22,9 @@
 -- tick and the clip restarts from frame 0 twice a second forever — which looks
 -- exactly like an animation that does not play.
 --
--- 🔴 AND IT IS NOT ACTUALLY STATIONARY. The census calls it "HOLDS + STATIONARY"
--- because it moves 45 units per TICK, under that report's threshold of 60. At
+-- 🔴 AND IT IS NOT ACTUALLY STATIONARY. The census used to call it
+-- "HOLDS + STATIONARY" because it moves 45 units per TICK, under that report's
+-- old threshold of 60 (it says DRIFTS now, and the thresholds were retuned). At
 -- 2 Hz that is **90 units a second in whatever direction he happens to face**,
 -- and the first version of this probe held it continuously: the Brute walked
 -- calmly off the map, 10 952 -> 31 164 units over 450 s, while the run sat
