@@ -32,14 +32,16 @@ mhfu.port.mod("zinogre_show", function(P)
   }
 
   local NEAR   = 900.0   -- park him this far along +X from the hunter
-  -- 🔴 GATE THE PULL ON A SETTLED AREA, NOT ON A TICK COUNT. The first version
-  -- fired 4 s after the port adopted the entity — which is at quest start, while
-  -- the driver was still walking base camp -> section 1. It teleported the monster
-  -- to a spot the hunter then walked away from, and filmed nothing. The player's
-  -- area index changes on every section transition, so "unchanged for SETTLE
-  -- ticks" is the signal that the hunter has arrived somewhere and stopped.
+  -- 🔴 GATE THE PULL ON HAVING LEFT BASE CAMP *AND THEN* SETTLED. Two earlier
+  -- versions of this gate both fired in the wrong place:
+  --   * a plain tick count fired 4 s after the port adopted the entity — which is
+  --     quest start, mid-walk — and dropped the monster in transit;
+  --   * "area index unchanged for 10 s" then fired AT BASE CAMP, because the
+  --     driver stands still there for exactly that long working the supply box.
+  -- Base camp is wherever the hunter starts, so the reliable signal is a CHANGE
+  -- away from the first area seen, and only then a settle.
   local SETTLE = 20      -- ticks @ 2 Hz = 10 s of a stable area index
-  local announced, pulled, area, held = false, false, nil, 0
+  local announced, pulled, area, held, home = false, false, nil, 0, nil
 
   zin:brain(function(s)
     local e = s.ent or 0
@@ -51,7 +53,9 @@ mhfu.port.mod("zinogre_show", function(P)
     end
     if pulled then return end
     local a = s.area
+    if home == nil then home = a end          -- base camp, whatever index it has
     if a ~= area then area, held = a, 0; return end
+    if a == home then return end              -- still in camp: not a destination
     held = held + 1
     if held < SETTLE then return end
     pulled = true
