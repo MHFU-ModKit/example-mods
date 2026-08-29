@@ -28,7 +28,7 @@ mhfu.port.mod("zinogre_test", function(P)
     name    = "zinogre",
     species = mhfu.MON_TIGREX,
     replace = { mhfu.MON_GIADROME },
-    pac     = "zinogre_v1.bin",
+    pac     = "zinogre_v2.bin",
     orig    = "file_06185.bin.orig",
     fid     = 6186,
     clips   = {},
