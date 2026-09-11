@@ -32,6 +32,10 @@ mhfu.port.mod("zinogre_lunge", function(P)
   local POPO_WAIT  = 10        -- ticks (~5 s) to look for a Popo before giving up
   local FALLBACK   = 1200.0    -- ...and dropping him this far +X of the hunter
   local HEARTBEAT  = 20        -- ticks (~10 s)
+  -- Cap HIS bar once, on first sight in-area. nil = leave the quest's 2800 alone.
+  -- The hit tables (zinogre_hit.lua, #19) already push each hit to the most a grid
+  -- byte can say (255%); this is the other lever if "a few hits" still is not.
+  local ZIN_HP     = nil       -- e.g. 600
 
   local zin = P.define{
     name    = "zinogre",
@@ -76,8 +80,21 @@ mhfu.port.mod("zinogre_lunge", function(P)
   end
 
   ------------------------------------------------------------------ brain
+  local capped = false
   zin:brain(function(s)
     if s.ent == 0 then return end
+
+    -- 0. optional: his HP, capped once (see ZIN_HP). Two cells carry it —
+    -- +0x2E4 (what the framework's entity_hp reads) and +0x41E (the resolver's
+    -- clamp, what port_state reads; both said 2800 -> 2400 last take) — so both
+    -- are written, and a lower value simply sticks.
+    if ZIN_HP and not capped and mhfu.get_screen_state() == IN_AREA
+        and (s.hp or 0) > ZIN_HP then
+      mhfu.write_u16(s.ent + 0x2E4, ZIN_HP)
+      mhfu.write_u16(s.ent + 0x41E, ZIN_HP)
+      capped = true
+      log("[zin_lunge] his HP capped %d -> %d", s.hp, ZIN_HP)
+    end
 
     -- 1. THE HUNTER'S HP FLOOR — refilled to MAX, not to the floor.
     -- 🔴 Measured 2026-09-11: one lunge hit took the bar 100 -> 26 (~74 damage).
