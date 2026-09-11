@@ -97,10 +97,16 @@ mhfu.port.mod("zinogre_lunge", function(P)
 
   -- THE NATIVE "PAST YOU" RULE (issue #16): evaluated every frame by the slot-29
   -- stub. In (1,4) for >= 15 frames (the hitbox spawns at clip frame 40 / speed
-  -- 2.4 = ~17 frames in), the gap GROWING, and at least 250 units away -> enter
+  -- 2.4 = ~17 frames in), the gap GROWING, and 250..1000 units away -> enter
   -- (0,3). Fires once per charge (the pair changes), then a 1 s cooldown.
-  zin:rule{ from = "lunge", min_frames = 15, receding = true, dist = { 250, 1e9 },
-            play = "lunge_stop", cooldown = 30, label = "past you" }
+  -- 🔴 THE WINDOW IS THE RULE. Take 2 (2026-09-11) ran it as `>= 250, receding`
+  -- and it fired on 62 of 65 charges: with the hunter 2000+ units off, any charge
+  -- not aimed dead at him reads as "receding" at frame 15, so the rule cut
+  -- charges that never came near. "Just past you" is receding AND close: he
+  -- crosses you at ~650 units/tick, so [250, 1000) is about one tick wide and
+  -- the 30 Hz evaluation is what makes it catchable at all.
+  zin:rule{ from = "lunge", min_frames = 15, receding = true, dist = { 250, 1000 },
+            play = "lunge_stop", cooldown = 30, label = "just past you" }
 
   ------------------------------------------------------------------ state
   local placed_in   = nil     -- the area we last dropped him into; nil = armed
@@ -245,7 +251,12 @@ mhfu.port.mod("zinogre_lunge", function(P)
     -- confirmed live); written from the stop pair it lasted EXACTLY ONE tick and
     -- bounced — the engine finishes its stop first. (0,3) is that stop now; wait
     -- for it to hand to (0,1)/(0,2), the next pulse from there holds.
-    if s.engaged and not s.move and not (s.main == 0 and s.sub == 3) then
+    --
+    -- ⚠️ NOR WHILE HE IS ALREADY LUNGING ON HIS OWN. With `claim` the host brain's
+    -- attacks ARE lunges (`engine entered 'lunge' itself`, no `s.move`), and asking
+    -- for one on top of that is the refusal `play()` logs — 60 of them in take 2.
+    if s.engaged and not s.move and not (s.main == 0 and s.sub == 3)
+        and not (s.main == 1 and s.sub == 4) then
       if not engaged_at then
         engaged_at = s.tick
         log("[zin_lunge] engaged at d=%.0f — driving lunge from here", s.dist)
@@ -266,10 +277,14 @@ mhfu.port.mod("zinogre_lunge", function(P)
                              st.sub_hits or 0, st.sub_landed or 0, st.brain_fires or 0,
                              st.req_done or 0, st.ai_ticks or 0, st.dist or 0)
       end
-      log("[zin_lunge] hb area=%d sec=%d same=%s d=%.0f engaged=%s move=%s "
+      -- `tgt` is +0x2F4 at this instant: PLAYER or CAT. It oscillates (the Felyne
+      -- outranks the hunter in +0x542), so read the run of heartbeats, not one —
+      -- a monster charging at the CAT is why `d` never shrinks in a take.
+      log("[zin_lunge] hb area=%d sec=%d same=%s d=%.0f engaged=%s tgt=%s move=%s "
           .. "pair=(%d,%d) hp=%d you=%d lunges=%d %s",
           s.area or -1, s.section or -1, tostring(s.same_section), s.dist,
-          tostring(s.engaged), tostring(s.move), s.main or -1, s.sub or -1,
+          tostring(s.engaged), s.targets_player and "PLAYER" or "other",
+          tostring(s.move), s.main or -1, s.sub or -1,
           s.hp or 0, s.player_hp or 0, lunges, seam)
     end
   end)
