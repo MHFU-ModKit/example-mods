@@ -61,7 +61,10 @@ mhfu.port.mod("zinogre_lunge", function(P)
   -- below (`after` / `hold_max`) and the library walks it; this brain only ends a
   -- charge EARLY, once he is past you, so the next one comes sooner.
   local LUNGE_MIN_TICKS = 3    -- frame 40 at speed 2.4 is ~0.6 s in; the node lives ~1 s
-  local LUNGE_MAX_TICKS = 8    -- ~4 s: a charge that never passes you still ends (hold_max)
+  -- 🔴 A PROVISIONED CHARGE TAKES ~4 s TO SPEND ITS BUDGET (take 2: the one charge the
+  -- rule did not cut ended after 8 ticks; take 3 hit `hold_max 8` three times at range).
+  -- hold_max is the SAFETY NET under the native end, so it must sit past it: 12.
+  local LUNGE_MAX_TICKS = 12   -- ~6 s: only a charge the engine never ends is cut here
   -- Cap HIS bar once, on first sight in-area. nil = leave the quest's 2800 alone.
   -- The hit tables (zinogre_hit.lua, #19) already push each hit to the most a grid
   -- byte can say (255%); this is the other lever if "a few hits" still is not.
@@ -86,7 +89,7 @@ mhfu.port.mod("zinogre_lunge", function(P)
       -- (the substitution seam). `after`/`hold_max` stay as the fallback chain for
       -- a framework without the seam; with it the charge ends itself.
       lunge      = { main = 1, sub = 4, clip = "lunge_forward", latch = 1,
-                     after = "lunge_stop", hold_max = 8, claim = { main = 1 } },
+                     after = "lunge_stop", hold_max = LUNGE_MAX_TICKS, claim = { main = 1 } },
       -- (0,3) is the engine's OWN skid after a charge. Its handler names no clip
       -- (`a1 []`), so undeclared the skid keeps whatever was playing; declared, the
       -- port's dash stop rides it. Its phase 0 seeds the +0x414 frame budget (60
@@ -107,9 +110,28 @@ mhfu.port.mod("zinogre_lunge", function(P)
   -- the 30 Hz evaluation is what makes it catchable at all.
   zin:rule{ from = "lunge", min_frames = 15, receding = true, dist = { 250, 1000 },
             play = "lunge_stop", cooldown = 30, label = "just past you" }
+  -- 🔴 THE RUN BUDGET IS DRAINED BY THE CLIP'S ROOT MOTION, AND THE PORT'S CLIP HAS
+  -- NONE TO SPEND (take 3, 2026-09-12). `0x09AD9A10(ent, 64, 0)` calls `0x09ACD460`,
+  -- which asks `0x08863B70(clip block 0, ...)` for this frame's ROOT-MOTION delta of
+  -- the playing animation and subtracts its forward component from +0x76C. The
+  -- Tigrex charge clip carries ~1800 units per loop and spends 1000 in ~2 s; the
+  -- Zinogre's lunge_forward (its travel sits on the hip, not the root) spends ~0,
+  -- so a provisioned charge with the port's clip painted on it NEVER ends by itself
+  -- — every uncut one ran into hold_max, and the engine's own (claimed) charges,
+  -- which have no hold_max, stood 40 s with the hitbox spent. This rule is the
+  -- budget the clip cannot drain: 75 frames (2.5 s) in (1,4) -> the skid, on the
+  -- game thread, for requested AND claimed charges alike.
+  zin:rule{ from = "lunge", min_frames = 75, play = "lunge_stop", cooldown = 30,
+            label = "run budget by time" }
 
   ------------------------------------------------------------------ state
-  local placed_in   = nil     -- the area we last dropped him into; nil = armed
+  -- ⚠️ `placed_in` survives a HOT RELOAD of this file on purpose: as a plain local
+  -- it reset on every reload and re-ran the drop — take 3 teleported him +1200X of
+  -- the hunter mid-fight because the rule window was edited. Leaving the section
+  -- still re-arms it (below).
+  P._once.zin_placed = P._once.zin_placed or { area = nil }
+  local placed       = P._once.zin_placed
+  local placed_in   = placed.area   -- the area we last dropped him into; nil = armed
   local waited      = 0       -- ticks spent looking for a Popo
   local engaged_at  = nil     -- tick he first noticed the hunter
   local lunges      = 0
@@ -180,6 +202,7 @@ mhfu.port.mod("zinogre_lunge", function(P)
         log("[zin_lunge] you left section 1 (area %d) — re-arming the drop", s.area or -1)
       end
       placed_in, waited = nil, 0
+      placed.area = nil
       return
     end
 
@@ -205,7 +228,7 @@ mhfu.port.mod("zinogre_lunge", function(P)
       -- invisible until his first roam. `entity_make_visible` writes +0x29A and ORs
       -- 0x8000 into +0x638 — gates A and B — and the engine clears skip-draw itself.
       mhfu.entity_make_visible(s.ent, s.area)
-      placed_in = SNOW_SEC1
+      placed_in, placed.area = SNOW_SEC1, SNOW_SEC1
       log("[zin_lunge] placed at (%.0f,%.0f) in area %d, visible; over to him",
           spot[1], spot[3], s.area)
       return
