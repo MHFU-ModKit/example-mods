@@ -32,6 +32,18 @@ mhfu.port.mod("zinogre_lunge", function(P)
   local POPO_WAIT  = 10        -- ticks (~5 s) to look for a Popo before giving up
   local FALLBACK   = 1200.0    -- ...and dropping him this far +X of the hunter
   local HEARTBEAT  = 20        -- ticks (~10 s)
+  -- 🔴 A LUNGE CARRIES ITS HITBOX ONCE PER ENTRY (measured 2026-09-11, the hitbox
+  -- editor's first live run). The (1,4) handler spawns its attack node when the
+  -- clip cursor crosses frame 40 in its opening phase, then parks in phase 3
+  -- (+0x1D5) for as long as the pair stands. Natively the engine LEAVES (1,4) by
+  -- itself — stop (1,3), recover (1,2), charge again — and every re-entry is a
+  -- fresh node. Held from here it never ends: 38 s in (1,4), phase 3 throughout,
+  -- the clip looping every 1.4 s, ZERO spawns, and he runs through you; the hits
+  -- that did land were after a flinch knocked him out of the pair. So once the
+  -- charge is spent — he is past you and the opening phase has had its window —
+  -- hand the run to its own stop pair; step 4 below lunges again from (1,2).
+  local LUNGE_MIN_TICKS = 3    -- frame 40 at speed 2.4 is ~0.6 s in; the node lives ~1 s
+  local LUNGE_MAX_TICKS = 8    -- ~4 s: a charge that never passes you still ends
   -- Cap HIS bar once, on first sight in-area. nil = leave the quest's 2800 alone.
   -- The hit tables (zinogre_hit.lua, #19) already push each hit to the most a grid
   -- byte can say (255%); this is the other lever if "a few hits" still is not.
@@ -48,8 +60,16 @@ mhfu.port.mod("zinogre_lunge", function(P)
     pac     = "zinogre_v10.bin",
     orig    = "file_06185.bin.orig",
     fid     = 6186,
-    clips   = { lunge_forward = 6 },  -- executor a1 == the packed slot index
-    moves   = { lunge = { main = 1, sub = 4, clip = "lunge_forward", latch = 1 } },
+    clips   = { lunge_forward = 6, stop_walk_forward = 5 },  -- a1 == packed slot
+    moves   = {
+      lunge      = { main = 1, sub = 4, clip = "lunge_forward", latch = 1 },
+      -- (1,3) is the charge's own stop/recover. Its handler asks the executor for
+      -- a1 2, and on this PAC slot 2 is `welcome_howl` — so a bare pair write
+      -- painted the howl over the skid (seen live 2026-09-11). Declared as a move,
+      -- the port's stop clip rides it instead; swap the clip here and in
+      -- ports/zinogre.toml if another fits the skid better.
+      lunge_stop = { main = 1, sub = 3, clip = "stop_walk_forward", latch = 1 },
+    },
   }
 
   ------------------------------------------------------------------ state
@@ -57,6 +77,7 @@ mhfu.port.mod("zinogre_lunge", function(P)
   local waited      = 0       -- ticks spent looking for a Popo
   local engaged_at  = nil     -- tick he first noticed the hunter
   local lunges      = 0
+  local stops       = 0       -- charges handed to (1,3) once they were spent
   local saves       = 0       -- times the HP floor caught the hunter
 
   --- The live Popo furthest from the hunter, as {x, y, z}, plus its distance.
@@ -158,6 +179,23 @@ mhfu.port.mod("zinogre_lunge", function(P)
     -- cell actually differs, so this is idempotent, and it touches neither position
     -- nor the freeze gate — his own movement and AI are untouched.
     if s.dist < COLOC then mhfu.entity_make_visible(s.ent, s.area) end
+
+    -- 3b. END A SPENT CHARGE. See LUNGE_MIN_TICKS above. `closing < 0` = the gap is
+    -- growing, he is past you; `since_play` is ticks since the pair was written.
+    -- (1,3) is the run's own stop/recover — the pair the engine goes to itself after
+    -- a native charge — so the library sees the move end next tick, and the (1,2)
+    -- gate below re-enters (1,4) with a fresh phase 0 and a fresh hitbox.
+    if s.move == "lunge" and s.main == 1 and s.sub == 4 then
+      local held = s.since_play or 0
+      if (held >= LUNGE_MIN_TICKS and (s.closing or 0) < 0) or held >= LUNGE_MAX_TICKS then
+        zin:play("lunge_stop")          -- the pair AND the port's stop clip
+        stops = stops + 1
+        if stops <= 3 or stops % 10 == 0 then
+          log("[zin_lunge] charge #%d spent after %d ticks (closing %.0f) -> (1,3), "
+              .. "the next lunge brings a new hitbox", lunges, held, s.closing or 0)
+        end
+      end
+    end
 
     -- 4. LUNGE WHENEVER HE IS ENGAGED.
     -- ⚠️ `engaged` is +0x5DC: "has noticed you", the '!' over his head — not the
