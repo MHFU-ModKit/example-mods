@@ -63,18 +63,17 @@ mhfu.port.mod("zinogre_lunge", function(P)
     pac     = "zinogre_v10.bin",
     orig    = "file_06185.bin.orig",
     fid     = 6186,
-    clips   = { lunge_forward = 6, stop_walk_forward = 5 },  -- a1 == packed slot
+    clips   = { lunge_forward = 6, dash_forward_stop = 21 },  -- a1 == packed slot
     moves   = {
       -- ⚠️ transcribed from ports/zinogre.toml [moves] BY HAND (issue #17): main,
       -- sub, clip, latch, after, hold_max — keep the two in step.
       lunge      = { main = 1, sub = 4, clip = "lunge_forward", latch = 1,
                      after = "lunge_stop", hold_max = 8 },
-      -- The port's OWN stop on (1,3) — the engine's own hand-off is (0,3), whose
-      -- handler names no clip of its own (`a1 []`), so this PAC's skid is put on
-      -- a main-1 pair that does. (1,3) asks the executor for a1 2, and on this
-      -- PAC slot 2 is `welcome_howl` — so a bare pair write painted the howl over
-      -- the skid (seen live 2026-09-11); declared, the stop clip rides it.
-      lunge_stop = { main = 1, sub = 3, clip = "stop_walk_forward", latch = 1 },
+      -- (0,3) is the engine's OWN skid after a charge. Its handler names no clip
+      -- (`a1 []`), so undeclared the skid keeps whatever was playing; declared, the
+      -- port's dash stop rides it. Its phase 0 seeds the +0x414 frame budget (60
+      -- frames) itself, so entered from here it ends on its own -> (0,1)/(0,2).
+      lunge_stop = { main = 0, sub = 3, clip = "dash_forward_stop", latch = 1 },
     },
   }
 
@@ -214,13 +213,12 @@ mhfu.port.mod("zinogre_lunge", function(P)
     -- clip from frame 0 — the move never reaches its hitbox frames — and repeated
     -- forcing makes the engine OR in the exhaustion bits and halt the AI outright.
     --
-    -- ⚠️ NOT FROM (1,3). Measured 2026-09-11 over 12 pulses: written from (1,2) the
-    -- pair holds 9-97 ticks and dispatches a1=17 (the intel's computed value,
-    -- confirmed live); written from (1,3) it lasts EXACTLY ONE tick and bounces
-    -- to (1,2) — (1,3) is the run's own stop/recover, and the engine finishes it
-    -- first. Pulsing there is a wasted act_set that reads as "the pair bounces".
-    -- Wait for (1,2); the next pulse from there holds.
-    if s.engaged and not s.move and not (s.main == 1 and s.sub == 3) then
+    -- ⚠️ NOT FROM THE SKID. Measured 2026-09-11 over 12 pulses: written from (1,2)
+    -- the pair holds 9-97 ticks and dispatches a1=17 (the intel's computed value,
+    -- confirmed live); written from the stop pair it lasted EXACTLY ONE tick and
+    -- bounced — the engine finishes its stop first. (0,3) is that stop now; wait
+    -- for it to hand to (0,1)/(0,2), the next pulse from there holds.
+    if s.engaged and not s.move and not (s.main == 0 and s.sub == 3) then
       if not engaged_at then
         engaged_at = s.tick
         log("[zin_lunge] engaged at d=%.0f — driving lunge from here", s.dist)
