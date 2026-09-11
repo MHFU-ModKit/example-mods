@@ -5,6 +5,21 @@
 -- port's own `lunge_forward` clip painted on it — every time he is engaged. The
 -- hunter's HP is held above a floor so a bad first take is a rerun, not a cart.
 --
+-- 🟢 THE NATIVE SEAMS (em_vhook v3, issues #15/#16) — what this take tests:
+--   1. `play("lunge")` goes through the engine's own ENTER-ACTION (the slot-29
+--      request), so the charge is PROVISIONED: it gets its run budget and hands to
+--      the skid (0,3) BY ITSELF. Expect "entered natively (1,4), provisioned" and
+--      then "move 'lunge' (1,4) ended after N ticks -> (0,3) ... adopted" with NO
+--      "hold_max" and NO "PARKED" lines.
+--   2. `lunge` CLAIMS every main-1 attack the Tigrex brain picks (slot-32
+--      substitution): when he decides to bite/spin/whatever, he lunges instead.
+--      The executor hook paints the lunge clip on it ("engine entered 'lunge'
+--      itself"). The heartbeat's `sub=hits/landed` counts them.
+--   3. A 30 Hz RULE ends a charge the frame he is past you (in (1,4) >= 15
+--      frames, the gap growing, >= 250 units) -> lunge_stop, with no Lua in the
+--      loop. `brain=` in the heartbeat counts its fires; the 2 Hz "past you"
+--      shortcut below only runs when the seam is not live.
+--
 -- The alignment and every caveat behind it live in `ports/zinogre.toml` [moves.lunge];
 -- this file is the runtime side of that manifest and nothing more. ⚠️ Nothing reads
 -- port.toml at runtime yet (issue #17), so the two are kept in step BY HAND: the
@@ -67,8 +82,11 @@ mhfu.port.mod("zinogre_lunge", function(P)
     moves   = {
       -- ⚠️ transcribed from ports/zinogre.toml [moves] BY HAND (issue #17): main,
       -- sub, clip, latch, after, hold_max — keep the two in step.
+      -- `claim`: every main-1 enter-action the HOST brain makes becomes this move
+      -- (the substitution seam). `after`/`hold_max` stay as the fallback chain for
+      -- a framework without the seam; with it the charge ends itself.
       lunge      = { main = 1, sub = 4, clip = "lunge_forward", latch = 1,
-                     after = "lunge_stop", hold_max = 8 },
+                     after = "lunge_stop", hold_max = 8, claim = { main = 1 } },
       -- (0,3) is the engine's OWN skid after a charge. Its handler names no clip
       -- (`a1 []`), so undeclared the skid keeps whatever was playing; declared, the
       -- port's dash stop rides it. Its phase 0 seeds the +0x414 frame budget (60
@@ -76,6 +94,13 @@ mhfu.port.mod("zinogre_lunge", function(P)
       lunge_stop = { main = 0, sub = 3, clip = "dash_forward_stop", latch = 1 },
     },
   }
+
+  -- THE NATIVE "PAST YOU" RULE (issue #16): evaluated every frame by the slot-29
+  -- stub. In (1,4) for >= 15 frames (the hitbox spawns at clip frame 40 / speed
+  -- 2.4 = ~17 frames in), the gap GROWING, and at least 250 units away -> enter
+  -- (0,3). Fires once per charge (the pair changes), then a 1 s cooldown.
+  zin:rule{ from = "lunge", min_frames = 15, receding = true, dist = { 250, 1e9 },
+            play = "lunge_stop", cooldown = 30, label = "past you" }
 
   ------------------------------------------------------------------ state
   local placed_in   = nil     -- the area we last dropped him into; nil = armed
@@ -189,7 +214,9 @@ mhfu.port.mod("zinogre_lunge", function(P)
     -- growing; `since_play` is ticks since the pair was written. The library ends
     -- it anyway at `hold_max` (LUNGE_MAX_TICKS) and hands to `after`; this is the
     -- tactical shortcut so the next charge — and its fresh hitbox — comes sooner.
-    if s.move == "lunge" and s.main == 1 and s.sub == 4 then
+    -- ⚠️ FALLBACK ONLY: with the seam live the 30 Hz rule above does this the
+    -- frame it is true, and a 2 Hz copy would just re-request what it did.
+    if not s.native and s.move == "lunge" and s.main == 1 and s.sub == 4 then
       local held = s.since_play or 0
       if held >= LUNGE_MIN_TICKS and (s.closing or 0) < 0 then
         if zin:play("lunge_stop") then  -- the pair AND the port's stop clip
@@ -232,14 +259,21 @@ mhfu.port.mod("zinogre_lunge", function(P)
     end
 
     if s.tick % HEARTBEAT == 0 then
+      local st = P.native_status and P.native_status() or nil
+      local seam = "seam=off"
+      if st and st.installed then
+        seam = string.format("seam=on sub=%d/%d brain=%d req=%d ai=%d d29=%.0f",
+                             st.sub_hits or 0, st.sub_landed or 0, st.brain_fires or 0,
+                             st.req_done or 0, st.ai_ticks or 0, st.dist or 0)
+      end
       log("[zin_lunge] hb area=%d sec=%d same=%s d=%.0f engaged=%s move=%s "
-          .. "pair=(%d,%d) hp=%d you=%d lunges=%d",
+          .. "pair=(%d,%d) hp=%d you=%d lunges=%d %s",
           s.area or -1, s.section or -1, tostring(s.same_section), s.dist,
           tostring(s.engaged), tostring(s.move), s.main or -1, s.sub or -1,
-          s.hp or 0, s.player_hp or 0, lunges)
+          s.hp or 0, s.player_hp or 0, lunges, seam)
     end
   end)
 
-  log("[zin_lunge] registered — Giadrome->Zinogre, section 1 (area %d), lunge on (1,4)",
-      SNOW_SEC1)
+  log("[zin_lunge] registered — Giadrome->Zinogre, section 1 (area %d), lunge on (1,4); "
+      .. "claims main-1 attacks, 'past you' rule -> lunge_stop", SNOW_SEC1)
 end)
