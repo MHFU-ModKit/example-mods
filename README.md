@@ -4,6 +4,8 @@
 
 # MHFU ModKit — example mods
 
+> **Archived.** This code now lives in [MHFU-ModKit/modkit](https://github.com/MHFU-ModKit/modkit), at [`framework/lua/examples`](https://github.com/MHFU-ModKit/modkit/tree/main/framework/lua/examples) (the Lua examples) and [`ports`](https://github.com/MHFU-ModKit/modkit/tree/main/ports) (the port manifests). Open issues and pull requests there.
+
 Lua mods for the [MHFU framework](https://github.com/MHFU-ModKit/framework), and the port
 manifests behind the ported monsters. Each `.lua` in `mods/` goes on the memory stick as is:
 
